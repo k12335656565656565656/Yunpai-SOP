@@ -111,6 +111,13 @@ class StepIeItemsRequest(BaseModel):
     reviewer: str
 
 
+class StepPageEditRequest(BaseModel):
+    reviewer: str
+    fields: dict[str, Any] = Field(default_factory=dict)
+    ie_items: list[StepIeItemDraft] | None = Field(default=None, max_length=6)
+    work_image_slots: int | None = Field(default=None, ge=1, le=6)
+
+
 class ChatRequest(BaseModel):
     message: str
     worker: str
@@ -295,6 +302,26 @@ def _replace_step_ie_items_and_regenerate(
     reviewer: str,
 ) -> dict[str, Any]:
     result = store.replace_step_ie_items(step_id, items, reviewer=reviewer)
+    return _regenerate_document_after_route_change(documents, result)
+
+
+def _save_step_page_edit_and_regenerate(
+    store: SopKnowledgeStore,
+    documents: SopDocumentService,
+    *,
+    step_id: int,
+    fields: dict[str, Any],
+    ie_items: list[dict[str, Any]] | None,
+    work_image_slots: int | None,
+    reviewer: str,
+) -> dict[str, Any]:
+    result = store.save_step_page_edit(
+        step_id,
+        fields=fields,
+        ie_items=ie_items,
+        work_image_slots=work_image_slots,
+        reviewer=reviewer,
+    )
     return _regenerate_document_after_route_change(documents, result)
 
 
@@ -484,6 +511,18 @@ def create_review_app(db_path: str | Path):
             documents,
             step_id=step_id,
             items=[item.model_dump(mode="json") for item in request.items],
+            reviewer=request.reviewer,
+        ))
+
+    @app.post("/api/steps/{step_id}/page-edit")
+    def save_step_page_edit(step_id: int, request: StepPageEditRequest) -> dict[str, Any]:
+        return guard(lambda: _save_step_page_edit_and_regenerate(
+            store,
+            documents,
+            step_id=step_id,
+            fields=request.fields,
+            ie_items=[item.model_dump(mode="json") for item in request.ie_items] if request.ie_items is not None else None,
+            work_image_slots=request.work_image_slots,
             reviewer=request.reviewer,
         ))
 
@@ -882,6 +921,18 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                     documents,
                     step_id=int(match.group(1)),
                     items=[item.model_dump(mode="json") for item in request.items],
+                    reviewer=request.reviewer,
+                ))
+                return
+            if match := re.fullmatch(r"/api/steps/(\d+)/page-edit", self.path):
+                request = StepPageEditRequest.model_validate(body)
+                self._run(lambda: _save_step_page_edit_and_regenerate(
+                    store,
+                    documents,
+                    step_id=int(match.group(1)),
+                    fields=request.fields,
+                    ie_items=[item.model_dump(mode="json") for item in request.ie_items] if request.ie_items is not None else None,
+                    work_image_slots=request.work_image_slots,
                     reviewer=request.reviewer,
                 ))
                 return

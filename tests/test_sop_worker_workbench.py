@@ -16,6 +16,7 @@ from cad_ai.sop_knowledge.web import (
     _confirm_media_and_regenerate,
     _regenerate_document_after_route_change,
     _replace_step_ie_items_and_regenerate,
+    _save_step_page_edit_and_regenerate,
     _save_media_layout_and_regenerate,
 )
 from tests.test_sop_knowledge_workflow import make_identity, make_route
@@ -519,6 +520,78 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         documents.generate.assert_not_called()
         documents.latest.assert_called_once_with(self.route_id)
 
+    def test_page_edit_updates_the_step_as_a_reviewable_draft(self) -> None:
+        step = self.store.get_route(self.route_id)["steps"][0]
+
+        result = self.store.save_step_page_edit(
+            step["id"],
+            fields={
+                "method": ["先核对物料标签", "确认无误后开始作业"],
+                "safety": ["操作前确认设备状态"],
+            },
+            ie_items=None,
+            work_image_slots=None,
+            reviewer="page-editor",
+        )
+
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["page_number"], 2)
+        self.assertEqual(set(result["field_names"]), {"method", "safety"})
+        saved = self.store.get_route(self.route_id)["steps"][0]
+        self.assertEqual(saved["method_json"], ["先核对物料标签", "确认无误后开始作业"])
+        self.assertEqual(saved["safety_json"], ["操作前确认设备状态"])
+        self.assertEqual(saved["review_state"], "needs_revision")
+        with self.store.connect() as connection:
+            decisions = connection.execute(
+                "SELECT field_name, decision FROM review_decision WHERE entity_id=? ORDER BY id DESC",
+                (step["id"],),
+            ).fetchall()
+        self.assertEqual({row["field_name"] for row in decisions[:2]}, {"method", "safety"})
+        self.assertTrue(all(row["decision"] == "needs_revision" for row in decisions[:2]))
+
+    def test_page_edit_regenerates_document_only_after_actual_change(self) -> None:
+        step = self.store.get_route(self.route_id)["steps"][0]
+        documents = Mock()
+        documents.generate.return_value = {
+            "route_id": self.route_id,
+            "version_token": "page-edit-version-token",
+            "page_count": 4,
+            "preview_status": "ready",
+        }
+        documents.latest.return_value = {
+            "route_id": self.route_id,
+            "version_token": "page-edit-version-token",
+            "page_count": 4,
+            "preview_status": "ready",
+        }
+
+        changed = _save_step_page_edit_and_regenerate(
+            self.store,
+            documents,
+            step_id=step["id"],
+            fields={"record_output": ["登记工单号和异常现象"]},
+            ie_items=None,
+            work_image_slots=None,
+            reviewer="page-editor",
+        )
+
+        self.assertTrue(changed["changed"])
+        documents.generate.assert_called_once_with(self.route_id)
+
+        documents.generate.reset_mock()
+        unchanged = _save_step_page_edit_and_regenerate(
+            self.store,
+            documents,
+            step_id=step["id"],
+            fields={"record_output": ["登记工单号和异常现象"]},
+            ie_items=None,
+            work_image_slots=None,
+            reviewer="page-editor",
+        )
+        self.assertFalse(unchanged["changed"])
+        documents.generate.assert_not_called()
+        documents.latest.assert_called_once_with(self.route_id)
+
     def test_route_editor_splits_actions_without_pages_or_into_independent_steps(self) -> None:
         step = self.store.get_route(self.route_id)["steps"][1]
         before_count = len(self.store.get_route(self.route_id)["steps"])
@@ -784,6 +857,14 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertIn("openMergeRouteStep", simple_html)
         self.assertIn("openDeleteRouteStep", simple_html)
         self.assertIn("saveRouteOrder", simple_html)
+        self.assertIn('id="pageEditToggle"', simple_html)
+        self.assertIn("page-edit-layer", simple_html)
+        self.assertIn("beginPageEdit", simple_html)
+        self.assertIn("savePageEdit", simple_html)
+        self.assertIn("/page-edit", simple_html)
+        self.assertIn("第 1 页为流程图", simple_html)
+        self.assertIn("page-edit-controls[hidden]", simple_html)
+        self.assertIn("if(pageEditState)return {page:currentPreviewPage", simple_html)
         self.assertIn("createRouteRevision", simple_html)
         self.assertIn("/steps/reviewable", simple_html)
         self.assertIn("/split/reviewable", simple_html)

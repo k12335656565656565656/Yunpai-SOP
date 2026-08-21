@@ -29,6 +29,11 @@ JSON_FIELDS = {
     "unknowns": "unknowns_json",
 }
 EDITABLE_FIELDS = {"title", "action", "why", "sequence_no", "parent_step_id", "review_state", "reviewer_comment", *JSON_FIELDS}
+PAGE_EDITABLE_FIELDS = {
+    "title", "action", "why", "inputs", "materials", "tool_equipment", "fixtures",
+    "parameters", "method", "quality_check", "acceptance_criteria", "safety",
+    "record_output", "exception",
+}
 ROUTE_SECTION_TYPES = (
     "product_identity",
     "bom_material",
@@ -802,6 +807,179 @@ class SopKnowledgeStore:
                 "ie_items": saved,
                 "affected_step_ids": [step_id],
                 "page_number": self._active_step_page(connection, route_id, step_id),
+            }
+
+    def save_step_page_edit(
+        self,
+        step_id: int,
+        *,
+        fields: dict[str, Any],
+        ie_items: list[dict[str, Any]] | None,
+        work_image_slots: int | None,
+        reviewer: str,
+    ) -> dict[str, Any]:
+        """Atomically save a guidance-book page without exposing document internals."""
+        clean_reviewer = reviewer.strip()
+        if not clean_reviewer:
+            raise ValueError("worker identity is required")
+        unsupported = sorted(set(fields) - PAGE_EDITABLE_FIELDS)
+        if unsupported:
+            raise ValueError("page field is not editable: " + ", ".join(unsupported))
+
+        normalized_fields: dict[str, Any] = {}
+        for field_name, value in fields.items():
+            if field_name in JSON_FIELDS:
+                if not isinstance(value, list):
+                    raise ValueError(f"page field must be a list: {field_name}")
+                if field_name == "parameters":
+                    if not all(isinstance(item, dict) for item in value):
+                        raise ValueError("parameters must contain objects")
+                    normalized_fields[field_name] = value
+                else:
+                    normalized_fields[field_name] = [
+                        str(item).strip() for item in value if str(item).strip()
+                    ]
+            else:
+                clean_value = str(value or "").strip()
+                if field_name == "title" and not clean_value:
+                    raise ValueError("step title is required")
+                normalized_fields[field_name] = clean_value
+
+        normalized_ie: list[dict[str, Any]] | None = None
+        requested_ids: list[int] = []
+        if ie_items is not None:
+            if len(ie_items) > 6:
+                raise ValueError("each step can contain at most 6 IE items")
+            normalized_ie = []
+            for raw in ie_items:
+                action = str(raw.get("action") or "").strip()
+                if not action:
+                    raise ValueError("IE item action is required")
+                raw_id = raw.get("id")
+                item_id = None if raw_id in (None, "") else int(raw_id)
+                if item_id is not None:
+                    if item_id <= 0 or item_id in requested_ids:
+                        raise ValueError("IE item id is invalid or duplicated")
+                    requested_ids.append(item_id)
+                normalized_ie.append({
+                    "id": item_id,
+                    **{field: str(raw.get(field) or "").strip() for field in IE_ITEM_FIELDS},
+                })
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT step.*,route.status AS route_status
+                   FROM active_route_step AS step
+                   JOIN product_route AS route ON route.id=step.route_id
+                   WHERE step.id=?""",
+                (step_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(step_id)
+            route_id = int(row["route_id"])
+            self._require_mutable_route(connection, route_id, route=row)
+
+            changes: list[tuple[str, Any, Any]] = []
+            for field_name, value in normalized_fields.items():
+                column = JSON_FIELDS.get(field_name, field_name)
+                old_value = json.loads(row[column]) if field_name in JSON_FIELDS else str(row[column] or "")
+                if old_value != value:
+                    changes.append((field_name, old_value, value))
+
+            existing_ie = [dict(item) for item in connection.execute(
+                "SELECT * FROM route_step_ie_item WHERE route_step_id=? ORDER BY sequence_no,id",
+                (step_id,),
+            )]
+            if normalized_ie is not None:
+                existing_ids = {int(item["id"]) for item in existing_ie}
+                if any(item_id not in existing_ids for item_id in requested_ids):
+                    raise ValueError("IE item does not belong to this step")
+                comparable_existing = [
+                    {"id": int(item["id"]), **{field: str(item[field] or "") for field in IE_ITEM_FIELDS}}
+                    for item in existing_ie
+                ]
+                if comparable_existing != normalized_ie:
+                    changes.append(("ie_items", comparable_existing, normalized_ie))
+
+            requested_slots = None
+            if work_image_slots is not None:
+                requested_slots = int(work_image_slots)
+                confirmed_images = int(connection.execute(
+                    "SELECT COUNT(*) FROM step_media WHERE route_step_id=? AND link_state='confirmed'",
+                    (step_id,),
+                ).fetchone()[0])
+                if requested_slots < confirmed_images:
+                    raise ValueError(
+                        f"this step has {confirmed_images} confirmed images; remove the extra images before reducing slots"
+                    )
+                previous_slots = int(row["work_image_slots"] or 3)
+                if previous_slots != requested_slots:
+                    changes.append(("work_image_slots", previous_slots, requested_slots))
+
+            page_number = self._active_step_page(connection, route_id, step_id)
+            if not changes:
+                return {
+                    "status": "unchanged",
+                    "changed": False,
+                    "route_id": route_id,
+                    "step_id": step_id,
+                    "step_title": str(row["title"]),
+                    "affected_step_ids": [],
+                    "page_number": page_number,
+                }
+
+            now = utcnow()
+            for field_name, _, value in changes:
+                if field_name in {"ie_items", "work_image_slots"}:
+                    continue
+                column = JSON_FIELDS.get(field_name, field_name)
+                encoded = json.dumps(value, ensure_ascii=False) if field_name in JSON_FIELDS else value
+                connection.execute(f"UPDATE route_step SET {column}=? WHERE id=?", (encoded, step_id))
+
+            if normalized_ie is not None and any(field == "ie_items" for field, _, _ in changes):
+                connection.execute("DELETE FROM route_step_ie_item WHERE route_step_id=?", (step_id,))
+                for sequence_no, item in enumerate(normalized_ie, start=1):
+                    self._insert_step_ie_item(
+                        connection,
+                        step_id,
+                        sequence_no,
+                        StepIeItemDraft(**item),
+                        item_id=item["id"],
+                        review_state="needs_revision",
+                        now=now,
+                    )
+
+            if requested_slots is not None and any(field == "work_image_slots" for field, _, _ in changes):
+                connection.execute("UPDATE route_step SET work_image_slots=? WHERE id=?", (requested_slots, step_id))
+
+            comment = "页面内直接编辑已写入草稿，待人工逐项核对"
+            connection.execute(
+                """UPDATE route_step
+                   SET review_state='needs_revision',reviewer_comment=?,updated_at=? WHERE id=?""",
+                (comment, now, step_id),
+            )
+            self._remove_step_knowledge(connection, [step_id])
+            session_id = self._active_review_session(connection, route_id, clean_reviewer, "页面内直接编辑")
+            for field_name, old_value, new_value in changes:
+                self._record_structure_decision(
+                    connection,
+                    session_id=session_id,
+                    step_id=step_id,
+                    field_name=field_name,
+                    old_value=old_value,
+                    new_value=new_value,
+                    comment=comment,
+                )
+            connection.execute("UPDATE product_route SET updated_at=? WHERE id=?", (now, route_id))
+            return {
+                "status": "page_edit_saved",
+                "changed": True,
+                "route_id": route_id,
+                "step_id": step_id,
+                "step_title": str(normalized_fields.get("title") or row["title"]),
+                "affected_step_ids": [step_id],
+                "field_names": [field for field, _, _ in changes],
+                "page_number": page_number,
             }
 
     def create_nl_proposal(
