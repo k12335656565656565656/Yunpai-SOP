@@ -675,11 +675,20 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
             length = int(self.headers.get("Content-Length", "0"))
             return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
 
-        def _send(self, status: int, payload: Any, content_type: str = "application/json; charset=utf-8") -> None:
+        def _send(
+            self,
+            status: int,
+            payload: Any,
+            content_type: str = "application/json; charset=utf-8",
+            *,
+            no_store: bool = False,
+        ) -> None:
             data = payload.encode("utf-8") if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
+            if no_store:
+                self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
 
@@ -706,7 +715,7 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
             path = parsed.path
             query = parse_qs(parsed.query)
             if path == "/":
-                self._send(200, SIMPLE_REVIEW_HTML, "text/html; charset=utf-8")
+                self._send(200, SIMPLE_REVIEW_HTML, "text/html; charset=utf-8", no_store=True)
             elif path == "/workbench":
                 self._send(200, REVIEW_HTML, "text/html; charset=utf-8")
             elif path == "/media-arrangement":

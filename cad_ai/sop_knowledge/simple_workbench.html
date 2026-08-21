@@ -335,23 +335,54 @@
       {key:'title',source:'title',label:'工站名称',x:14.5,y:13.5,w:12,h:5,single:true},
       {key:'action',source:'action',label:'作业顺序',x:62,y:13.5,w:24,h:5,single:true},
       {key:'method',source:'method_json',label:'图片步骤说明',x:13,y:60.5,w:74,h:7},
-      {key:'quality_check',source:'quality_check_json',label:'作业标准',x:87.5,y:17,w:11,h:12},
-      {key:'tool_equipment',source:'tool_equipment_json',label:'设备／工具',x:87.5,y:29,w:11,h:12},
-      {key:'materials',source:'material_json',label:'辅助材料',x:87.5,y:41,w:11,h:9},
-      {key:'safety',source:'safety_json',label:'注意事项',x:87.5,y:50,w:11,h:10},
-      {key:'record_output',source:'record_output_json',label:'记录要求',x:87.5,y:60,w:11,h:10},
-      {key:'inputs',source:'input_json',label:'输入资料',x:87.5,y:70,w:11,h:6},
+      {key:'quality_check',source:'quality_check_json',label:'作业标准',x:85.4,y:13.6,w:11.5,h:9.3,sideIndex:0},
+      {key:'tool_equipment',source:'tool_equipment_json',label:'设备／工具',x:85.4,y:23,w:11.5,h:6.6,sideIndex:1},
+      {key:'materials',source:'material_json',label:'辅助材料',x:85.4,y:29.7,w:11.5,h:6.6,sideIndex:2},
+      {key:'safety',source:'safety_json',label:'注意事项',x:85.4,y:36.4,w:11.5,h:6.6,sideIndex:3},
+      {key:'record_output',source:'record_output_json',label:'记录要求',x:85.4,y:43.1,w:11.5,h:6.6,sideIndex:4},
+      {key:'inputs',source:'input_json',label:'输入资料',x:85.4,y:49.8,w:11.5,h:6.7,sideIndex:5},
       {key:'ie_items',label:'IE 项目',x:1.5,y:76,w:97,h:16,action:'ie'},
       {key:'work_image_slots',label:'图片格数',x:76,y:60.5,w:10,h:7,action:'layout'}
     ];
 
+    const pageEditRegionCache=new WeakMap();
+    function pageEditLineRuns(points){const groups=[];for(const point of points){const last=groups.at(-1);if(last&&point<=last.at(-1)+1)last.push(point);else groups.push([point])}return groups.map(group=>({start:group[0],end:group.at(-1),middle:(group[0]+group.at(-1))/2}))}
+    function detectSideSectionRegions(image){
+      if(!image?.complete||!image.naturalWidth||!image.naturalHeight)return null;
+      const cached=pageEditRegionCache.get(image);if(cached)return cached;
+      try{
+        const width=image.naturalWidth,height=image.naturalHeight,canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
+        const context=canvas.getContext('2d',{willReadFrequently:true});context.drawImage(image,0,0);const pixels=context.getImageData(0,0,width,height).data;
+        const dark=(x,y)=>{const offset=(y*width+x)*4;return pixels[offset]<100&&pixels[offset+1]<100&&pixels[offset+2]<100};
+        const vertical=[];const minimumVerticalPixels=Math.ceil(height*.28);
+        for(let x=0;x<width;x++){let count=0;for(let y=0;y<height;y++)if(dark(x,y))count++;if(count>=minimumVerticalPixels)vertical.push(x)}
+        const verticalRuns=pageEditLineRuns(vertical);if(verticalRuns.length<2)return null;
+        const [leftEdge,rightEdge]=verticalRuns.slice(-2);const left=Math.round(leftEdge.middle),right=Math.round(rightEdge.middle),span=right-left;
+        if(span<width*.06)return null;
+        const horizontal=[];const minimumHorizontalPixels=Math.ceil(span*.72);
+        for(let y=0;y<height;y++){let count=0;for(let x=left;x<=right;x++)if(dark(x,y))count++;if(count>=minimumHorizontalPixels)horizontal.push(y)}
+        const horizontalRuns=pageEditLineRuns(horizontal);const bodyStart=horizontalRuns.findIndex((line,index)=>{
+          const lines=horizontalRuns.slice(index,index+7);return line.middle>height*.1&&lines.length===7&&lines.slice(1).every((candidate,candidateIndex)=>{
+            const gap=candidate.middle-lines[candidateIndex].middle;return gap>height*.04&&gap<height*.18
+          })
+        });
+        if(bodyStart<0)return null;
+        const bodyLines=horizontalRuns.slice(bodyStart,bodyStart+7),horizontalInset=Math.max(2,Math.round(span*.012)),verticalInset=2;
+        const shared={x:(left+horizontalInset)/width*100,w:(span-horizontalInset*2)/width*100};
+        const regions=bodyLines.slice(0,-1).map((line,index)=>({
+          ...shared,y:(line.middle+verticalInset)/height*100,h:(bodyLines[index+1].middle-line.middle-verticalInset*2)/height*100
+        }));
+        pageEditRegionCache.set(image,regions);return regions;
+      }catch(error){return null}
+    }
+    function pageEditRegionsForPage(page){const image=page.querySelector('img'),sideRegions=detectSideSectionRegions(image),regions={};for(const field of pageEditFields){regions[field.key]=field.sideIndex!==undefined&&sideRegions?.[field.sideIndex]?sideRegions[field.sideIndex]:{x:field.x,y:field.y,w:field.w,h:field.h}}return regions}
     function pageEditStep(page){return page>1?(routePayload?.steps||[])[page-2]||null:null}
     function pageEditText(step,field){const value=step?.[field.source];if(Array.isArray(value))return value.map(item=>typeof item==='string'?item:JSON.stringify(item)).join('\n');return String(value??'')}
     function setPageEditDirty(dirty){if(!pageEditState)return;pageEditState.dirty=dirty;$('pageEditDirty').hidden=!dirty;$('pageEditUndo').disabled=!dirty}
     function clearPageEditLayers(){document.querySelectorAll('.page-edit-layer').forEach(layer=>layer.remove());document.querySelectorAll('.doc-page.editing-page').forEach(page=>page.classList.remove('editing-page'))}
     function closePageEdit({confirmDiscard=true}={}){if(!pageEditState)return true;if(confirmDiscard&&pageEditState.dirty&&!confirm('当前页还有未保存的修改，确定退出编辑吗？'))return false;pageEditState=null;clearPageEditLayers();document.querySelector('.workspace').classList.remove('page-editing');document.querySelector('.preview').classList.remove('page-editing');$('pageEditToggle').hidden=false;$('pageEditControls').hidden=true;$('pageEditDirty').hidden=true;return true}
     function openPageEditAction(action){if(!pageEditState)return;if(pageEditState.dirty){setError('请先保存当前页的文字修改，或退出编辑后再调整图片和 IE 项目。');return}const stepId=pageEditState.stepId;closePageEdit({confirmDiscard:false});if(action==='ie')openStepIeItems(stepId);if(action==='layout')openWorkImageLayout(stepId)}
-    function renderPageEditLayer(){clearPageEditLayers();if(!pageEditState)return;const page=document.querySelector(`.doc-page[data-page-number="${pageEditState.page}"]`),sheet=page?.querySelector('.doc-page-sheet');if(!page||!sheet)return;page.classList.add('editing-page');const layer=document.createElement('div');layer.className='page-edit-layer';for(const field of pageEditFields){const zone=document.createElement('div');zone.className=`page-edit-zone ${field.single?'single':''} ${field.action?'action':''}`;zone.dataset.label=field.label;zone.style.left=`${field.x}%`;zone.style.top=`${field.y}%`;zone.style.width=`${field.w}%`;zone.style.height=`${field.h}%`;if(field.action){const button=document.createElement('button');button.type='button';button.textContent=field.action==='ie'?'编辑 IE 项目':'调整图片格数';button.addEventListener('click',event=>{event.stopPropagation();openPageEditAction(field.action)});zone.append(button)}else{const input=document.createElement('textarea');input.value=pageEditState.values[field.key];input.setAttribute('aria-label',field.label);input.addEventListener('input',()=>{pageEditState.values[field.key]=input.value;setPageEditDirty(true)});zone.addEventListener('click',event=>{if(event.target===input)return;document.querySelectorAll('.page-edit-zone.active').forEach(item=>item.classList.remove('active'));zone.classList.add('active');input.focus()});input.addEventListener('blur',()=>zone.classList.remove('active'));zone.append(input)}layer.append(zone)}const note=document.createElement('div');note.className='page-edit-note';note.textContent='点击黄色边框区域即可直接修改；图片和 IE 项目保留专用编辑入口。';layer.append(note);sheet.append(layer)}
+    function renderPageEditLayer(){clearPageEditLayers();if(!pageEditState)return;const page=document.querySelector(`.doc-page[data-page-number="${pageEditState.page}"]`),sheet=page?.querySelector('.doc-page-sheet'),image=sheet?.querySelector('img');if(!page||!sheet)return;page.classList.add('editing-page');const regions=pageEditRegionsForPage(page),layer=document.createElement('div');layer.className='page-edit-layer';for(const field of pageEditFields){const region=regions[field.key];const zone=document.createElement('div');zone.className=`page-edit-zone ${field.single?'single':''} ${field.action?'action':''}`;zone.dataset.label=field.label;zone.style.left=`${region.x}%`;zone.style.top=`${region.y}%`;zone.style.width=`${region.w}%`;zone.style.height=`${region.h}%`;if(field.action){const button=document.createElement('button');button.type='button';button.textContent=field.action==='ie'?'编辑 IE 项目':'调整图片格数';button.addEventListener('click',event=>{event.stopPropagation();openPageEditAction(field.action)});zone.append(button)}else{const input=document.createElement('textarea');input.value=pageEditState.values[field.key];input.setAttribute('aria-label',field.label);input.addEventListener('input',()=>{pageEditState.values[field.key]=input.value;setPageEditDirty(true)});zone.addEventListener('click',event=>{if(event.target===input)return;document.querySelectorAll('.page-edit-zone.active').forEach(item=>item.classList.remove('active'));zone.classList.add('active');input.focus()});input.addEventListener('blur',()=>zone.classList.remove('active'));zone.append(input)}layer.append(zone)}const note=document.createElement('div');note.className='page-edit-note';note.textContent='点击黄色边框区域即可直接修改；图片和 IE 项目保留专用编辑入口。';layer.append(note);sheet.append(layer);if(image&&!image.complete)image.addEventListener('load',()=>{pageEditRegionCache.delete(image);if(pageEditState?.page===Number(page.dataset.pageNumber))renderPageEditLayer()},{once:true})}
     function beginPageEdit(){if(pageEditState)return;const page=currentPreviewPage,step=pageEditStep(page);if(page===1){switchWorkbenchMode('route');showRouteToast('第 1 页为流程图','请在路线编辑中新增、排序、拆分或合并工序。');return}if(!step){setError('没有找到当前页对应的工序。');return}if(routeIsApproved()){switchWorkbenchMode('route');showRouteToast('已批准路线不能直接编辑','请先在路线编辑中创建新的修订版。');return}const values={};for(const field of pageEditFields.filter(item=>!item.action))values[field.key]=pageEditText(step,field);pageEditState={page,stepId:Number(step.id),values,original:{...values},dirty:false};document.querySelector('.workspace').classList.add('page-editing');document.querySelector('.preview').classList.add('page-editing');$('pageEditToggle').hidden=true;$('pageEditControls').hidden=false;setPageEditDirty(false);renderPageEditLayer();showRouteToast(`正在编辑第 ${page} 页`,`${step.step_code} · ${step.title}，保存后将重新生成 DOCX。`)}
     function undoPageEdit(){if(!pageEditState)return;pageEditState.values={...pageEditState.original};setPageEditDirty(false);renderPageEditLayer()}
     async function savePageEdit(){if(!pageEditState)return;const worker=routeWorker();if(!worker)return;const fields={};for(const field of pageEditFields.filter(item=>!item.action)){const value=pageEditState.values[field.key],original=pageEditState.original[field.key];if(value===original)continue;fields[field.key]=field.source?.endsWith('_json')?value.split(/\n+/).map(item=>item.trim()).filter(Boolean):value.trim()}if(!Object.keys(fields).length){showRouteToast('没有需要保存的修改','当前页内容没有变化。');return}const state={...pageEditState};$('pageEditSave').disabled=true;$('pageEditSave').textContent='正在更新 DOCX';try{const result=await api(`/api/steps/${state.stepId}/page-edit`,{method:'POST',body:JSON.stringify({reviewer:worker,fields})});closePageEdit({confirmDiscard:false});const origin=refreshDocument(result.document);routePayload=await api(`/api/routes/${routeId}`);renderRouteEditor();if(result.document?.preview_status!=='failed')void locateChange({page_number:result.page_number,field_key:Object.keys(fields)[0],field:'页面内直接编辑'},{origin});showRouteToast('当前页已保存',result.changed===false?'没有实际变化':'DOCX 已重新生成，内容仍待人工核对。')}catch(error){setError(`当前页保存失败：${error.message}`);showRouteToast('没有保存当前页',error.message)}finally{$('pageEditSave').disabled=false;$('pageEditSave').textContent='保存草稿并更新 DOCX'}}

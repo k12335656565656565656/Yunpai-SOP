@@ -333,7 +333,9 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
         thread.start()
         try:
             base = f"http://127.0.0.1:{server.server_address[1]}"
-            simple_page = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
+            simple_response = urllib.request.urlopen(base + "/", timeout=5)
+            self.assertEqual(simple_response.headers.get("Cache-Control"), "no-store")
+            simple_page = simple_response.read().decode("utf-8")
             self.assertIn("DOCX 实时预览", simple_page)
             self.assertIn("发送并更新 DOCX", simple_page)
             self.assertIn("打开完整版", simple_page)
