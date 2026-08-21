@@ -66,6 +66,11 @@ IE_ITEM_FIELDS = (
     "time_source",
     "note",
 )
+FONT_PROFILES = {
+    "standard": "标准阅读",
+    "clear_large": "清晰大字",
+    "large": "大字版",
+}
 
 
 def utcnow() -> str:
@@ -694,6 +699,61 @@ class SopKnowledgeStore:
                 "work_image_slots": requested,
                 "affected_step_ids": [step_id],
                 "page_number": page_number,
+            }
+
+    def set_route_font_profile(self, route_id: int, profile: str, *, reviewer: str) -> dict[str, Any]:
+        """Persist a route-wide reading-size choice as a reviewable layout change."""
+        clean_reviewer = reviewer.strip()
+        if not clean_reviewer:
+            raise ValueError("worker identity is required")
+        if profile not in FONT_PROFILES:
+            raise ValueError("unsupported SOP font profile")
+        with self.connect() as connection:
+            route = connection.execute(
+                "SELECT id,status,font_profile FROM product_route WHERE id=?", (route_id,)
+            ).fetchone()
+            if not route:
+                raise KeyError(route_id)
+            self._require_mutable_route(connection, route_id, route=route)
+            previous = str(route["font_profile"] or "standard")
+            if previous == profile:
+                return {
+                    "status": "unchanged",
+                    "changed": False,
+                    "route_id": route_id,
+                    "font_profile": profile,
+                    "font_profile_label": FONT_PROFILES[profile],
+                }
+            now = utcnow()
+            connection.execute(
+                "UPDATE product_route SET font_profile=?,updated_at=? WHERE id=?",
+                (profile, now, route_id),
+            )
+            session_id = self._active_review_session(
+                connection, route_id, clean_reviewer, "人工调整 SOP 阅读字号"
+            )
+            connection.execute(
+                """INSERT INTO review_decision(
+                       review_session_id,entity_type,entity_id,field_name,decision,
+                       old_value_json,new_value_json,comment,decided_at
+                   ) VALUES(?,'route',?,'font_profile','needs_revision',?,?,?,?)""",
+                (
+                    session_id,
+                    route_id,
+                    json.dumps(previous, ensure_ascii=False),
+                    json.dumps(profile, ensure_ascii=False),
+                    f"SOP 阅读字号由“{FONT_PROFILES[previous]}”调整为“{FONT_PROFILES[profile]}”，待人工核对",
+                    now,
+                ),
+            )
+            return {
+                "status": "font_profile_updated",
+                "changed": True,
+                "route_id": route_id,
+                "font_profile": profile,
+                "font_profile_label": FONT_PROFILES[profile],
+                "previous_font_profile": previous,
+                "previous_font_profile_label": FONT_PROFILES[previous],
             }
 
     def replace_step_ie_items(
@@ -2367,9 +2427,9 @@ class SopKnowledgeStore:
             next_version = int(connection.execute("SELECT COALESCE(MAX(version),0)+1 FROM product_route WHERE product_id=?", (route["product_id"],)).fetchone()[0])
             now = utcnow()
             cursor = connection.execute(
-                """INSERT INTO product_route(product_id,process_family_id,version,status,approval_scope,route_name,route_summary,source_kind,parent_route_id,created_by,created_at,updated_at)
-                   VALUES(?,?,?,'draft','none',?,?, 'exact_approved',?,?,?,?)""",
-                (route["product_id"], route["process_family_id"], next_version, route["route_name"], route["route_summary"], approved_route_id, created_by, now, now),
+                """INSERT INTO product_route(product_id,process_family_id,version,status,approval_scope,route_name,route_summary,source_kind,parent_route_id,created_by,created_at,updated_at,font_profile)
+                   VALUES(?,?,?,'draft','none',?,?, 'exact_approved',?,?,?,?,?)""",
+                (route["product_id"], route["process_family_id"], next_version, route["route_name"], route["route_summary"], approved_route_id, created_by, now, now, route.get("font_profile") or "standard"),
             )
             new_route_id = int(cursor.lastrowid)
             old_to_new: dict[int, int] = {}

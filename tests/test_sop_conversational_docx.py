@@ -202,6 +202,66 @@ class SopConversationalDocxTests(unittest.TestCase):
         self.assertIn("未写入 SOP 草稿", result["message"])
         self.assertEqual(self.store.get_route(self.route_id)["steps"][1]["review_state"], "unreviewed")
 
+    def test_font_profile_choice_waits_for_confirmation_then_regenerates_once(self) -> None:
+        documents = StableDocuments()
+        service = SopConversationService(
+            self.store, documents, assistant=NeverCalledAssistant()  # type: ignore[arg-type]
+        )
+
+        prompt = service.chat(self.route_id, "字体调大一点", worker="worker-01")
+
+        self.assertEqual(prompt["parser_kind"], "font_profile_selection")
+        self.assertFalse(prompt["docx_regenerated"])
+        self.assertEqual(documents.generated, [])
+        self.assertIn("1. 标准阅读", prompt["message"])
+        self.assertIn("2. 清晰大字", prompt["message"])
+        self.assertIn("3. 大字版", prompt["message"])
+        self.assertEqual(self.store.get_route(self.route_id)["route"]["font_profile"], "standard")
+
+        result = service.chat(self.route_id, "2", worker="worker-01")
+
+        self.assertEqual(result["parser_kind"], "font_profile")
+        self.assertTrue(result["docx_regenerated"])
+        self.assertEqual(documents.generated, [self.route_id])
+        self.assertEqual(self.store.get_route(self.route_id)["route"]["font_profile"], "clear_large")
+        with self.store.connect() as connection:
+            decision = connection.execute(
+                "SELECT entity_type,field_name,decision FROM review_decision WHERE field_name='font_profile'"
+            ).fetchone()
+        self.assertEqual(dict(decision), {
+            "entity_type": "route", "field_name": "font_profile", "decision": "needs_revision",
+        })
+
+        repeat_prompt = service.chat(self.route_id, "字体调大一点", worker="worker-01")
+        repeated = service.chat(self.route_id, "2", worker="worker-01")
+        self.assertFalse(repeat_prompt["docx_regenerated"])
+        self.assertFalse(repeated["docx_regenerated"])
+        self.assertEqual(documents.generated, [self.route_id])
+
+    def test_font_profile_on_approved_route_creates_revision_only_after_choice(self) -> None:
+        documents = StableDocuments()
+        service = SopConversationService(
+            self.store, documents, assistant=NeverCalledAssistant()  # type: ignore[arg-type]
+        )
+        with self.store.connect() as connection:
+            connection.execute("UPDATE product_route SET status='approved' WHERE id=?", (self.route_id,))
+
+        prompt = service.chat(self.route_id, "把字体调大一点", worker="worker-01")
+        self.assertEqual(prompt["route_id"], self.route_id)
+        self.assertFalse(prompt["docx_regenerated"])
+        with self.store.connect() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM product_route").fetchone()[0], 1)
+
+        result = service.chat(self.route_id, "3", worker="worker-01")
+        revised_route_id = int(result["route_id"])
+        self.assertNotEqual(revised_route_id, self.route_id)
+        self.assertEqual(self.store.get_route(self.route_id)["route"]["status"], "approved")
+        revised = self.store.get_route(revised_route_id)["route"]
+        self.assertEqual(revised["status"], "draft")
+        self.assertEqual(revised["font_profile"], "large")
+        self.assertTrue(result["docx_regenerated"])
+        self.assertEqual(documents.generated, [revised_route_id])
+
     def test_fallback_never_auto_adds_steps_without_explicit_new_step_intent(self) -> None:
         documents = FakeDocuments()
         service = SopConversationService(
@@ -337,6 +397,13 @@ class SopConversationalDocxTests(unittest.TestCase):
             step["id"], "method", ["人工通过受控接口修改后的新动作"], reviewer="worker-02",
             decision="needs_revision", comment="测试文档失效检测",
         )
+        after = documents._route_fingerprint(self.route_id)
+        self.assertNotEqual(before, after)
+
+    def test_document_fingerprint_detects_font_profile_change(self) -> None:
+        documents = SopDocumentService(self.store)
+        before = documents._route_fingerprint(self.route_id)
+        self.store.set_route_font_profile(self.route_id, "clear_large", reviewer="worker-02")
         after = documents._route_fingerprint(self.route_id)
         self.assertNotEqual(before, after)
 

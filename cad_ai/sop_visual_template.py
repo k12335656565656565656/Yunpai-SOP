@@ -212,6 +212,7 @@ def build_work_instruction_page(
     page_no: int = 1,
     page_total: int = 41,
     work_image_slots: int = 6,
+    font_profile: str = "standard",
 ) -> dict[str, Any]:
     slot_count = _normalize_work_image_slots(work_image_slots)
     step_slots = [
@@ -237,6 +238,7 @@ def build_work_instruction_page(
         "page_no": page_no,
         "page_total": page_total,
         "work_image_slots": slot_count,
+        "font_profile": _normalize_font_profile(font_profile),
         "header_fields": list(REFERENCE_80806_129_FORMAT["work_instruction_page"]["header_fields"]),
         "operation_order": "①准备物料==②设定尺寸==③裁线==④自检品质==⑤作业完成",
         "step_slots": step_slots,
@@ -1048,14 +1050,15 @@ def _render_work_instruction_word_table(document: Any, page: dict[str, Any]) -> 
         page.get("work_image_slots") or len(page.get("step_slots") or []) or DEFAULT_WORK_IMAGE_SLOTS
     )
     layout = _work_image_layout(slot_count)
-    font_sizes = _work_image_font_sizes(slot_count)
+    font_sizes = _work_image_font_sizes(slot_count, page.get("font_profile", "standard"))
     body = document.add_table(rows=8, cols=8)
     body.alignment = WD_TABLE_ALIGNMENT.CENTER
     body.autofit = False
     _set_table_borders(body)
     step_by_slot = {int(slot.get("slot_no")): slot for slot in page.get("step_slots", [])}
     caption_line_count = _work_image_caption_line_count(list(step_by_slot.values()))
-    for row, height in zip(body.rows, _work_image_body_row_heights(slot_count, caption_line_count)):
+    font_profile = page.get("font_profile", "standard")
+    for row, height in zip(body.rows, _work_image_body_row_heights(slot_count, caption_line_count, font_profile)):
         _set_row_height(row, height)
     column_widths = [1.45, 3.45, 3.45, 3.45, 3.45, 3.45, 3.45, 5.55]
     for row in body.rows:
@@ -1080,9 +1083,7 @@ def _render_work_instruction_word_table(document: Any, page: dict[str, Any]) -> 
             step_by_slot.get(item["slot_no"]),
             item["slot_no"],
             image_width_cm=column_span * 3.45 - 0.5,
-            image_height_cm=(
-                4.5 if slot_count <= 3 else 1.9 if slot_count == 6 else 2.0
-            ),
+            image_height_cm=_work_image_max_height_cm(slot_count, font_profile),
             placeholder_size=font_sizes["placeholder"],
             caption_size=font_sizes["caption"],
         )
@@ -1112,7 +1113,7 @@ def _render_work_instruction_word_table(document: Any, page: dict[str, Any]) -> 
         _set_word_cell(
             content_cell,
             "；".join(parameter_map.get(title) or ["待确认"]),
-            size=8,
+            size=font_sizes["parameter"],
             align=WD_ALIGN_PARAGRAPH.LEFT,
         )
         _set_word_cell_margins(content_cell, top=20, start=60, bottom=20, end=60)
@@ -1147,6 +1148,11 @@ def _normalize_work_image_slots(value: Any) -> int:
     if slot_count < 1 or slot_count > 6:
         raise ValueError("work image layout must contain 1 to 6 slots")
     return slot_count
+
+
+def _normalize_font_profile(value: Any) -> str:
+    profile = str(value or "standard").strip()
+    return profile if profile in {"standard", "clear_large", "large"} else "standard"
 
 
 def _work_image_layout(slot_count: int) -> list[dict[str, int]]:
@@ -1196,17 +1202,38 @@ def _work_image_caption_line_count(step_slots: list[dict[str, Any]]) -> int:
     )
 
 
-def _work_image_body_row_heights(slot_count: int, caption_line_count: int = 1) -> list[int]:
+def _work_image_max_height_cm(slot_count: int, font_profile: str = "standard") -> float:
+    profile = _normalize_font_profile(font_profile)
+    reduction = {"standard": 0.0, "clear_large": 0.45, "large": 0.9}[profile]
+    base_height = 4.5 if _normalize_work_image_slots(slot_count) <= 3 else 1.9 if slot_count == 6 else 2.0
+    return max(1.5, base_height - reduction)
+
+
+def _work_image_body_row_heights(
+    slot_count: int,
+    caption_line_count: int = 1,
+    font_profile: str = "standard",
+) -> list[int]:
     count = _normalize_work_image_slots(slot_count)
-    caption_height = min(1400, 600 + max(0, int(caption_line_count) - 1) * 240)
+    profile = _normalize_font_profile(font_profile)
+    if count == 6:
+        # The six-image arrangement is already at the fixed one-page limit.
+        # Use its validated row budget whenever an enlarged profile is chosen.
+        profile = "standard"
+    reserve = {"standard": 0, "clear_large": 240, "large": 420}[profile]
+    caption_extra = {"standard": 0, "clear_large": 120, "large": 240}[profile]
+    caption_height = min(1400, 600 + caption_extra + max(0, int(caption_line_count) - 1) * 240)
     if count <= 3:
         # Trade unused image space for longer instructions while keeping the
         # complete body, IE rows, and sign-off area on one landscape page.
-        image_height = max(560, (4920 - caption_height - 720) // 5)
+        image_height = max(420, (4920 - caption_height - 720 - reserve) // 5)
         return [image_height] * 5 + [caption_height, 280, 280]
     # Keep every layout within the same A4 landscape page budget. Larger
     # minimums make LibreOffice push the footer onto a separate blank page.
-    image_height = 600 if count == 6 else 630
+    if count == 6:
+        image_height = {"standard": 600, "clear_large": 500, "large": 460}[profile]
+    else:
+        image_height = {"standard": 630, "clear_large": 540, "large": 500}[profile]
     return [
         image_height,
         image_height,
@@ -1219,14 +1246,42 @@ def _work_image_body_row_heights(slot_count: int, caption_line_count: int = 1) -
     ]
 
 
-def _work_image_font_sizes(slot_count: int) -> dict[str, float]:
+def _work_image_font_sizes(slot_count: int, font_profile: str = "standard") -> dict[str, float]:
     count = _normalize_work_image_slots(slot_count)
-    return {
+    base = {
         "caption": {1: 10.5, 2: 9.5, 3: 8.5, 4: 8.0, 5: 7.5, 6: 7.0}[count],
         "placeholder": {1: 16.0, 2: 14.0, 3: 13.0, 4: 12.0, 5: 11.0, 6: 10.0}[count],
         "side": {1: 8.5, 2: 8.5, 3: 8.0, 4: 8.0, 5: 7.5, 6: 7.5}[count],
         "ie": {1: 8.5, 2: 8.0, 3: 7.5, 4: 7.5, 5: 7.5, 6: 7.5}[count],
     }
+    if _normalize_font_profile(font_profile) == "standard":
+        return {**base, "parameter": base["side"]}
+    # Six-image pages leave no reliable vertical slack once the IE table and
+    # six right-side sections are present. Keep this dense layout at its
+    # validated baseline instead of creating a clipped or extra SOP page.
+    if count == 6:
+        return {**base, "parameter": base["side"]}
+    profile = _normalize_font_profile(font_profile)
+    caption_delta = 1.0 if profile == "clear_large" else 2.0
+    side_delta = 1.0
+    limits = {
+        "caption": {1: 12.5, 2: 11.5, 3: 10.5, 4: 9.5, 5: 8.0, 6: 7.5},
+        "side": {1: 10.5, 2: 10.0, 3: 9.5, 4: 8.5, 5: 8.0, 6: 8.0},
+        "ie": {1: 10.0, 2: 9.5, 3: 8.5, 4: 8.0, 5: 8.0, 6: 8.0},
+    }
+    adjusted = {
+        "caption": min(base["caption"] + caption_delta, limits["caption"][count]),
+        "side": min(base["side"] + side_delta, limits["side"][count]),
+    }
+    # IE headers are very narrow. Enlarge the measured/action values while
+    # keeping their column labels compact enough to preserve one SOP page.
+    ie_delta = 0.5
+    adjusted["ie"] = min(base["ie"] + ie_delta, limits["ie"][count])
+    # Placeholder labels are not operator-authored SOP text; retain their
+    # existing size so empty image cells do not destabilize the page layout.
+    adjusted["placeholder"] = base["placeholder"]
+    adjusted["parameter"] = adjusted["side"]
+    return adjusted
 
 
 def _work_image_order_label(slot_count: int) -> str:
@@ -1342,10 +1397,12 @@ def _render_ie_time_study_word_table(document: Any, page: dict[str, Any], *, sco
         slot_count = _normalize_work_image_slots(
             page.get("work_image_slots") or len(page.get("step_slots") or []) or DEFAULT_WORK_IMAGE_SLOTS
         )
-        content_size = _work_image_font_sizes(slot_count)["ie"]
+        content_size = _work_image_font_sizes(
+            slot_count, page.get("font_profile", "standard")
+        )["ie"]
     for col_index, field in enumerate(fields):
         cell = table.cell(1, col_index)
-        _set_word_cell(cell, str(field), bold=True, size=content_size, shaded=True)
+        _set_word_cell(cell, str(field), bold=True, size=min(content_size, 7.5), shaded=True)
         _set_word_cell_margins(cell, top=20, start=40, bottom=20, end=40)
     for row_index, row in enumerate(rows, start=2):
         for col_index, field in enumerate(fields):
@@ -2059,7 +2116,7 @@ def _work_step_grid_svg(page: dict[str, Any]) -> list[str]:
             x = left_x + column_index * (slot_width + gap)
             positions[slot_no] = (x, y, slot_width, row_height)
 
-    font_sizes = _work_image_font_sizes(slot_count)
+    font_sizes = _work_image_font_sizes(slot_count, page.get("font_profile", "standard"))
     slot_by_number = {int(slot.get("slot_no") or 0): slot for slot in page.get("step_slots", [])}
     for slot_no in range(1, slot_count + 1):
         slot = slot_by_number.get(slot_no, {"slot_no": slot_no, "image_label": "图片占位"})

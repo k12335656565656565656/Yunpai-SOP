@@ -816,6 +816,11 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
             / "simple_workbench.html"
         ).read_text(encoding="utf-8")
         self.assertIn("const asList", simple_html)
+        self.assertIn("标准阅读", simple_html)
+        self.assertIn("清晰大字", simple_html)
+        self.assertIn("大字版", simple_html)
+        self.assertIn("font_profile_selection", simple_html)
+        self.assertIn("fontProfileLabels", simple_html)
         self.assertIn("target-option", simple_html)
         self.assertIn("data-candidate-step", simple_html)
         self.assertIn("selected_step_id", simple_html)

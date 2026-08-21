@@ -555,6 +555,7 @@ def _route_template_pages(
     normalized_date: str,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     route = payload["route"]
+    font_profile = str(route.get("font_profile") or "standard")
     steps = list(payload.get("steps") or [])
     route_product_name = str(route.get("product_name") or "HDMI 成品线")
     product_name = "HDMI 成品线（草案）" if "HDMI" in route_product_name.upper() else route_product_name
@@ -630,6 +631,7 @@ def _route_template_pages(
             page_no=page_no,
             page_total=page_total,
             work_image_slots=slot_count,
+            font_profile=font_profile,
         )
         page["operation_order"] = (
             f"{step.get('step_code', '')} | {step.get('title', '')} | "
@@ -793,18 +795,25 @@ def _apply_multi_page_delivery_controls(
         )
     tables = document.tables
     landscape = document.sections[1]
-    landscape.top_margin = Cm(0.3)
-    landscape.bottom_margin = Cm(0.3)
+    uses_enlarged_font_profile = any(
+        page.get("font_profile", "standard") != "standard" for page in work_pages
+    )
+    landscape.top_margin = Cm(0.1 if uses_enlarged_font_profile else 0.3)
+    landscape.bottom_margin = Cm(0.1 if uses_enlarged_font_profile else 0.3)
     landscape.left_margin = Cm(0.6)
     landscape.right_margin = Cm(0.6)
     _set_word_cell(tables[0].cell(2, 3), "DRAFT")
     _set_word_cell(tables[0].cell(2, 5), display_date)
     for page_index in range(instruction_page_count):
         slot_count = _normalize_work_image_slots(work_pages[page_index].get("work_image_slots") or 3)
-        font_sizes = _work_image_font_sizes(slot_count)
+        font_profile = work_pages[page_index].get("font_profile", "standard")
+        font_sizes = _work_image_font_sizes(
+            slot_count, font_profile
+        )
         base = 4 + page_index * 4
         header, body, ie_table, footer = tables[base : base + 4]
-        for row, height in zip(header.rows, [440, 340, 460]):
+        header_heights = [400, 300, 420] if font_profile != "standard" else [440, 340, 460]
+        for row, height in zip(header.rows, header_heights):
             _set_exact_row_height(row, height)
             for cell in row.cells:
                 _set_word_cell_margins(cell, top=20, start=60, bottom=20, end=60)
@@ -813,7 +822,7 @@ def _apply_multi_page_delivery_controls(
         caption_line_count = _work_image_caption_line_count(
             list(work_pages[page_index].get("step_slots") or [])
         )
-        for row, height in zip(body.rows, _work_image_body_row_heights(slot_count, caption_line_count)):
+        for row, height in zip(body.rows, _work_image_body_row_heights(slot_count, caption_line_count, font_profile)):
             _set_row_height(row, height)
         action_row_height = 240 if slot_count <= 3 else 200
         for row_index in range(len(ie_table.rows)):
@@ -821,11 +830,12 @@ def _apply_multi_page_delivery_controls(
                 ie_table.rows[row_index],
                 260 if row_index < 2 else action_row_height,
             )
-        _set_row_height(footer.rows[0], 240)
-        _set_row_height(footer.rows[1], 280)
+        _set_row_height(footer.rows[0], 220 if font_profile != "standard" else 240)
+        _set_row_height(footer.rows[1], 250 if font_profile != "standard" else 280)
         for row_index in range(6):
             side_cell = body.cell(row_index, 7)
-            _set_word_cell_margins(side_cell, top=30, start=70, bottom=30, end=70)
+            side_margin = 70 if font_profile == "standard" else 30
+            _set_word_cell_margins(side_cell, top=30, start=side_margin, bottom=30, end=side_margin)
             for paragraph in side_cell.paragraphs:
                 for run in paragraph.runs:
                     run.font.size = Pt(font_sizes["side"])

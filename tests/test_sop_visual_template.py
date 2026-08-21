@@ -15,6 +15,7 @@ from openpyxl import load_workbook
 from cad_ai.sop_visual_template import (
     REFERENCE_80806_129_FORMAT,
     SOP_FLOWCHART_SHAPE_POLICY,
+    _work_image_font_sizes,
     _build_sop_layout_workbook,
     _build_sop_word_document,
     build_process_flow_page,
@@ -100,6 +101,17 @@ class SopVisualTemplateTests(unittest.TestCase):
         self.assertEqual(page["side_sections"][-1]["title"], "物料表")
         self.assertIn("批准", [item["title"] for item in page["bottom_sections"]])
         self.assertIn("管制文件（印章处）", [item["title"] for item in page["bottom_sections"]])
+
+    def test_font_profiles_enlarge_operator_text_with_safe_multi_image_caps(self) -> None:
+        for slot_count in (1, 3, 6):
+            standard = _work_image_font_sizes(slot_count, "standard")
+            clear_large = _work_image_font_sizes(slot_count, "clear_large")
+            large = _work_image_font_sizes(slot_count, "large")
+            for field in ("caption", "side", "parameter", "ie"):
+                self.assertGreaterEqual(clear_large[field], standard[field])
+                self.assertGreaterEqual(large[field], clear_large[field])
+            self.assertLessEqual(large["caption"], {1: 12.5, 3: 10.5, 6: 7.5}[slot_count])
+        self.assertEqual(build_work_instruction_page(font_profile="not-valid")["font_profile"], "standard")
 
     def test_word_and_excel_render_technical_and_production_parameter_sections(self) -> None:
         flow = build_process_flow_page()

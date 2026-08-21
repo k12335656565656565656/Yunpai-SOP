@@ -135,6 +135,7 @@
     const $=id=>document.getElementById(id);
     const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const asList=value=>{if(typeof value==='string')return value.trim()?[value]:[];if(!Array.isArray(value))return[];const parts=value.filter(item=>item!==null&&item!==undefined&&String(item).trim()!=='');if(parts.length>1&&parts.every(item=>typeof item==='string'&&Array.from(item).length===1))return[parts.join('')];return parts};
+    const fontProfileLabels={standard:'标准阅读',clear_large:'清晰大字',large:'大字版'};
     const fieldRegions={
       title:{x:11.7,y:10.5,w:14,h:6},action:{x:56,y:10.5,w:42,h:6},why:{x:78,y:16.5,w:20,h:9},
       method:{x:21.5,y:16.5,w:56.5,h:43},tool_equipment:{x:78,y:25,w:20,h:10},fixtures:{x:78,y:25,w:20,h:10},
@@ -247,7 +248,7 @@
     async function loadRoute(id){
       routeId=Number(id);clearRouteSelection();setError('');$('previewEmpty').style.display='grid';$('routeState').textContent='正在准备 DOCX';$('stateDot').classList.remove('ready');
       const [route,history,doc]=await Promise.all([api(`/api/routes/${routeId}`),api(`/api/routes/${routeId}/chat/history`),api(`/api/routes/${routeId}/documents/latest`)]);
-      const item=route.route;$('routeState').textContent=`${item.status} · v${item.version} · ${route.steps.length} 道工序`;$('stateDot').classList.add('ready');
+      const item=route.route,profile=fontProfileLabels[item.font_profile]||fontProfileLabels.standard;$('routeState').textContent=`${item.status} · v${item.version} · ${route.steps.length} 道工序 · ${profile}`;$('stateDot').classList.add('ready');
       routePayload=route;routeOrderDirty=false;activeRouteStepId=route.steps.some(step=>Number(step.id)===Number(activeRouteStepId))?activeRouteStepId:route.steps[0]?.id||null;clearRouteOrderDirty();renderRouteEditor();await loadRecentDeletions();documentInfo=doc;refreshDocument(doc);renderHistory(history);
     }
     function showPagePreviewError(image){
@@ -292,7 +293,7 @@
         const changes=asList(meta.changes).map(x=>{const page=changePageNumber(x),location=x.location?`查看位置：${x.location}`:page?`DOCX 第 ${page} 页`:'',fieldKey=x.field_key||fieldKeysByLabel[x.field]||'';return`<div class="change"><b>${esc(x.target)}</b> · ${esc(x.field)}<br>${esc(x.change)}${location?`<div class="change-location"><span>${esc(location)}</span>${page?`<button class="locate-change" type="button" data-page-number="${page}" data-field-key="${esc(fieldKey)}" data-field-label="${esc(x.field||'写入位置')}">定位并高亮</button>`:''}</div>`:''}${x.reason?`<br><span>${esc(x.reason)}</span>`:''}</div>`}).join('');
         const warnings=asList(meta.warnings).map(x=>`<div class="warning">${esc(x)}</div>`).join('');
         const hasDetails=judgement||changes||warnings;
-        const awaiting=meta.parser_kind==='target_selection',parserLabel=meta.parser_kind==='llm'?'AI 已理解':meta.parser_kind==='reference'?'查看位置':awaiting?'请确认工序':meta.parser_kind==='error'?'处理失败':'离线解析';
+        const awaiting=meta.parser_kind==='target_selection'||meta.parser_kind==='font_profile_selection',parserLabel=meta.parser_kind==='llm'?'AI 已理解':meta.parser_kind==='reference'?'查看位置':meta.parser_kind==='font_profile_selection'?'请选择字号':meta.parser_kind==='font_profile'?'字号已调整':awaiting?'请确认工序':meta.parser_kind==='error'?'处理失败':'离线解析';
         wrap.innerHTML=`<div class="assistant-card"><div class="assistant-main">${esc(content)}<div class="assistant-meta"><span class="badge ai">${parserLabel}</span>${meta.docx_regenerated?'<span class="badge docx">DOCX 已重新生成</span>':'<span class="badge">未改动文档</span>'}<span class="badge review">${awaiting?'等待选择':'待人工核对'}</span></div></div>${targetChoices(meta,messageId,resolved)}${hasDetails?`<details open><summary>查看 AI 判断与实际写入</summary><div class="detail-body">${judgement}${changes}${warnings}</div></details>`:''}</div>`;
       }
       $('messages').appendChild(wrap);$('messages').scrollTop=$('messages').scrollHeight;
@@ -306,7 +307,7 @@
         const result=await api(`/api/routes/${routeId}/chat`,{method:'POST',body:JSON.stringify({message,worker,use_ai:true,selected_step_id:options.selectedStepId||null,pending_message_id:options.pendingMessageId||null})});typing.remove();
         const firstLocatedChange=asList(result.changes).find(change=>changePageNumber(change)>0);
         if(Number(result.route_id)!==routeId){routeId=Number(result.route_id);await loadProducts(routeId);if(result.docx_regenerated&&firstLocatedChange)void locateChange(firstLocatedChange)}
-        else{const origin=refreshDocument(result.document);appendMessage('assistant',result.message,result,result.assistant_message_id);if(options.pendingMessageId)document.querySelectorAll(`[data-pending-message="${Number(options.pendingMessageId)}"]`).forEach(button=>{button.disabled=true;button.dataset.resolved='true'});clearRouteSelection();routePayload=await api(`/api/routes/${routeId}`);renderRouteEditor();if(result.docx_regenerated&&firstLocatedChange)void locateChange(firstLocatedChange,{origin})}
+        else{const origin=result.document?refreshDocument(result.document):{page:currentPreviewPage,scrollTop:$('docPages').scrollTop};appendMessage('assistant',result.message,result,result.assistant_message_id);if(options.pendingMessageId)document.querySelectorAll(`[data-pending-message="${Number(options.pendingMessageId)}"]`).forEach(button=>{button.disabled=true;button.dataset.resolved='true'});clearRouteSelection();routePayload=await api(`/api/routes/${routeId}`);const item=routePayload.route,profile=fontProfileLabels[item.font_profile]||fontProfileLabels.standard;$('routeState').textContent=`${item.status} · v${item.version} · ${routePayload.steps.length} 道工序 · ${profile}`;renderRouteEditor();if(result.docx_regenerated&&firstLocatedChange)void locateChange(firstLocatedChange,{origin})}
       }catch(error){typing.remove();setError(`没有完成修改：${error.message}`);appendMessage('assistant','这次没有成功更新 DOCX，请查看下方错误后重试。',{warnings:[error.message],parser_kind:'error'})}
       finally{$('send').disabled=false;setCandidateBusy(false);$('send').textContent='发送并更新 DOCX';$('prompt').focus({preventScroll:true})}
     }

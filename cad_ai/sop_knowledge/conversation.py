@@ -5,7 +5,7 @@ from typing import Any
 
 from .documents import SopDocumentService
 from .nl_assistant import NaturalLanguageSopAssistant
-from .store import SopKnowledgeStore
+from .store import FONT_PROFILES, SopKnowledgeStore
 from .targeting import TargetResolution, is_step_edit_request, resolve
 
 
@@ -25,6 +25,37 @@ FIELD_LABELS = {
     "record_output": "记录要求",
     "exception": "异常处理",
 }
+
+FONT_PROFILE_SELECTION_TEXT = (
+    "可以。请选择本份 SOP 的阅读字号：\n"
+    "1. 标准阅读\n"
+    "2. 清晰大字\n"
+    "3. 大字版\n"
+    "请直接回复 1、2 或 3。"
+)
+
+
+def is_font_profile_request(message: str) -> bool:
+    """Recognize a reading-size request without asking the LLM to infer it."""
+    text = re.sub(r"\s+", "", message.strip().lower())
+    if not text:
+        return False
+    font_markers = ("字体", "字号", "文字", "字迹", "大字")
+    size_markers = ("调大", "放大", "大一点", "大些", "加大", "增大", "看清", "看不清")
+    return any(marker in text for marker in font_markers) and any(marker in text for marker in size_markers)
+
+
+def selected_font_profile(message: str) -> str | None:
+    """Accept a requested choice only while the conversation is awaiting it."""
+    text = re.sub(r"\s+", "", message.strip().lower())
+    normalized = text.replace("。", "").replace("，", "").replace("！", "").replace("!", "")
+    if normalized in {"1", "选1", "选择1", "标准", "标准阅读", "默认", "样板大小1"}:
+        return "standard"
+    if normalized in {"2", "选2", "选择2", "清晰", "清晰大字", "样板大小2"}:
+        return "clear_large"
+    if normalized in {"3", "选3", "选择3", "大字", "大字版", "样板大小3"}:
+        return "large"
+    return None
 
 
 def is_read_only_request(message: str) -> bool:
@@ -84,10 +115,19 @@ class SopConversationService:
         message = message.strip()
         if not worker:
             raise ValueError("请填写工作人员姓名或工号")
+
+        route_payload = self.store.get_route(route_id)
+        history = self.store.list_chat_messages(route_id, limit=24)
+        profile = selected_font_profile(message)
+        if self._has_pending_font_profile_selection(history) and profile:
+            return self._apply_font_profile_selection(
+                route_id, route_payload, message, profile, worker=worker
+            )
+        if is_font_profile_request(message):
+            return self._request_font_profile_selection(route_id, route_payload, message, worker=worker)
         if len(message) < 2:
             raise ValueError("请直接描述要修改的部分")
 
-        route_payload = self.store.get_route(route_id)
         read_only = is_read_only_request(message)
         location_query = is_location_query(message)
         revision_from: int | None = None
@@ -265,6 +305,155 @@ class SopConversationService:
             "proposal_id": proposal_id,
             "assistant_message_id": assistant_message_id,
             "target_resolution": target_resolution.to_dict() if target_resolution else None,
+        }
+
+    @staticmethod
+    def _has_pending_font_profile_selection(history: list[dict[str, Any]]) -> bool:
+        for item in reversed(history):
+            if item.get("role") != "assistant":
+                continue
+            metadata = item.get("metadata_json") or {}
+            return (
+                metadata.get("parser_kind") == "font_profile_selection"
+                and metadata.get("font_profile_selection") == "pending"
+            )
+        return False
+
+    def _existing_document(self, route_id: int) -> dict[str, Any] | None:
+        """Return the already-published document without creating a new version."""
+        try:
+            return self.documents.latest(route_id, generate_if_missing=False)
+        except FileNotFoundError:
+            return None
+
+    def _request_font_profile_selection(
+        self,
+        route_id: int,
+        route_payload: dict[str, Any],
+        message: str,
+        *,
+        worker: str,
+    ) -> dict[str, Any]:
+        self.store.append_chat_message(route_id, "user", message, metadata={"worker": worker})
+        current_profile = str(route_payload["route"].get("font_profile") or "standard")
+        document = self._existing_document(route_id)
+        metadata = {
+            "parser_kind": "font_profile_selection",
+            "font_profile_selection": "pending",
+            "font_profile": current_profile,
+            "font_profile_label": FONT_PROFILES[current_profile],
+            "summary": "等待操作员选择 SOP 阅读字号。",
+            "judgement": ["这只会调整整份指导书的阅读字号，不会修改工艺内容或审批状态。"],
+            "warnings": [],
+            "changes": [],
+            "applied": {"status": "awaiting_font_profile_choice", "changed": False, "route_id": route_id},
+            "document": document,
+            "docx_regenerated": False,
+            "requires_human_confirmation": True,
+            "revision_from": None,
+            "target_resolution": None,
+            "resolved_pending_message_id": None,
+        }
+        assistant_message_id = self.store.append_chat_message(
+            route_id, "assistant", FONT_PROFILE_SELECTION_TEXT, metadata=metadata
+        )
+        return {
+            "route_id": route_id,
+            "message": FONT_PROFILE_SELECTION_TEXT,
+            "parser_kind": "font_profile_selection",
+            "summary": metadata["summary"],
+            "judgement": metadata["judgement"],
+            "warnings": metadata["warnings"],
+            "changes": [],
+            "applied": metadata["applied"],
+            "document": document,
+            "docx_regenerated": False,
+            "requires_human_confirmation": True,
+            "revision_from": None,
+            "proposal_id": None,
+            "assistant_message_id": assistant_message_id,
+            "target_resolution": None,
+            "font_profile": current_profile,
+            "font_profile_label": FONT_PROFILES[current_profile],
+        }
+
+    def _apply_font_profile_selection(
+        self,
+        route_id: int,
+        route_payload: dict[str, Any],
+        message: str,
+        profile: str,
+        *,
+        worker: str,
+    ) -> dict[str, Any]:
+        revision_from: int | None = None
+        if route_payload["route"]["status"] == "approved":
+            revision_from = route_id
+            route_id = self.store.create_revision(route_id, created_by=worker)
+            route_payload = self.store.get_route(route_id)
+            self.store.append_chat_message(
+                route_id,
+                "system",
+                f"原路线 {revision_from} 已锁定，系统已创建可编辑修订版 {route_id}。",
+                metadata={"revision_from": revision_from},
+            )
+
+        self.store.append_chat_message(route_id, "user", message, metadata={"worker": worker})
+        applied = self.store.set_route_font_profile(route_id, profile, reviewer=worker)
+        changed = bool(applied["changed"])
+        document = self.documents.generate(route_id) if changed else self._existing_document(route_id)
+        warnings: list[str] = []
+        if profile == "large" and any(int(step.get("work_image_slots") or 3) >= 5 for step in route_payload.get("steps", [])):
+            warnings.append("5 格或 6 格工图页会按安全上限放大，避免文字截断或表格越界。")
+        details = [{
+            "target": "整份 SOP 指导书",
+            "field": "阅读字号",
+            "field_key": "font_profile",
+            "change": f"已选择“{FONT_PROFILES[profile]}”。正文、资料栏、技术/生产参数和 IE 工时会同步调整。",
+            "location": "所有指导书页 > 作业说明、资料栏、参数与 IE 工时",
+            "page_number": None,
+        }]
+        response_text = (
+            f"已改为“{FONT_PROFILES[profile]}”。DOCX 已重新生成，工艺内容和审批状态没有变化，字号调整仍待人工核对。"
+            if changed
+            else f"当前已经是“{FONT_PROFILES[profile]}”，DOCX 未重复生成。"
+        )
+        metadata = {
+            "parser_kind": "font_profile",
+            "font_profile_selection": "completed",
+            "font_profile": profile,
+            "font_profile_label": FONT_PROFILES[profile],
+            "summary": "已保存 SOP 阅读字号方案。" if changed else "字号方案未变化。",
+            "judgement": ["已按操作员确认的字号方案处理，没有改动任何工艺事实。"],
+            "warnings": warnings,
+            "changes": details,
+            "applied": applied,
+            "document": document,
+            "docx_regenerated": changed,
+            "requires_human_confirmation": True,
+            "revision_from": revision_from,
+            "target_resolution": None,
+            "resolved_pending_message_id": None,
+        }
+        assistant_message_id = self.store.append_chat_message(route_id, "assistant", response_text, metadata=metadata)
+        return {
+            "route_id": route_id,
+            "message": response_text,
+            "parser_kind": "font_profile",
+            "summary": metadata["summary"],
+            "judgement": metadata["judgement"],
+            "warnings": warnings,
+            "changes": details,
+            "applied": applied,
+            "document": document,
+            "docx_regenerated": changed,
+            "requires_human_confirmation": True,
+            "revision_from": revision_from,
+            "proposal_id": None,
+            "assistant_message_id": assistant_message_id,
+            "target_resolution": None,
+            "font_profile": profile,
+            "font_profile_label": FONT_PROFILES[profile],
         }
 
     def _request_target_confirmation(

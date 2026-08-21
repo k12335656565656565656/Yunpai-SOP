@@ -28,6 +28,7 @@ from scripts.generate_sop_template_ai_handoff import (
 from cad_ai.sop_knowledge.store import SopKnowledgeStore
 from cad_ai.sop_knowledge.models import RouteSectionDraft
 from cad_ai.sop_knowledge.documents import SopDocumentService
+from cad_ai.sop_visual_template import _work_image_font_sizes
 from tests.test_sop_knowledge_workflow import make_identity, make_route
 
 
@@ -205,6 +206,7 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
                 )
             for slot_count, step in enumerate(steps, start=1):
                 store.set_step_work_image_slots(step["id"], slot_count, reviewer="layout-tester")
+            store.set_route_font_profile(route_id, "large", reviewer="layout-tester")
 
             result = generate_route_package(
                 root / "package",
@@ -230,6 +232,32 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
                 self.assertEqual(len(ie_table.rows), 2 + slot_count)
                 self.assertIn("技术参数", body.cell(6, 0).text)
                 self.assertIn("生产参数", body.cell(7, 0).text)
+                font_sizes = _work_image_font_sizes(slot_count, "large")
+                side_sizes = [
+                    run.font.size.pt
+                    for row_index in range(6)
+                    for paragraph in body.cell(row_index, 7).paragraphs
+                    for run in paragraph.runs
+                    if run.font.size is not None
+                ]
+                parameter_sizes = [
+                    run.font.size.pt
+                    for row_index in (6, 7)
+                    for paragraph in body.cell(row_index, 1).paragraphs
+                    for run in paragraph.runs
+                    if run.font.size is not None
+                ]
+                ie_sizes = [
+                    run.font.size.pt
+                    for row in ie_table.rows[2:]
+                    for cell in row.cells
+                    for paragraph in cell.paragraphs
+                    for run in paragraph.runs
+                    if run.font.size is not None
+                ]
+                self.assertGreaterEqual(min(side_sizes), font_sizes["side"])
+                self.assertGreaterEqual(min(parameter_sizes), font_sizes["parameter"])
+                self.assertGreaterEqual(min(ie_sizes), font_sizes["ie"])
 
             first_body_text = "\n".join(
                 cell.text for row in document.tables[5].rows for cell in row.cells
