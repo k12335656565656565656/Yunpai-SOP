@@ -125,6 +125,9 @@ IE_TIME_STUDY_FIELDS = [
     "动态调整",
 ]
 
+SOP_PARAMETER_SECTION_TITLES = ["技术参数", "生产参数"]
+DEFAULT_WORK_IMAGE_SLOTS = 3
+
 SOP_FLOWCHART_SHAPE_POLICY = "testing=diamond; processing=ellipse"
 
 SOP_TESTING_NODE_TYPES = frozenset({"decision", "inspection", "test", "quality", "measurement"})
@@ -208,7 +211,9 @@ def build_work_instruction_page(
     version: str = "E",
     page_no: int = 1,
     page_total: int = 41,
+    work_image_slots: int = 6,
 ) -> dict[str, Any]:
+    slot_count = _normalize_work_image_slots(work_image_slots)
     step_slots = [
         {
             "slot_no": index,
@@ -216,7 +221,7 @@ def build_work_instruction_page(
             "image_label": "图片占位",
             "text_placeholder": f"{index}. 由 agent 填写作业描述、关键尺寸、检查要点。",
         }
-        for index in REFERENCE_80806_129_FORMAT["work_instruction_page"]["step_sequence"]
+        for index in range(1, slot_count + 1)
     ]
     return {
         "page_type": "work_instruction",
@@ -231,9 +236,11 @@ def build_work_instruction_page(
         "version": version,
         "page_no": page_no,
         "page_total": page_total,
+        "work_image_slots": slot_count,
         "header_fields": list(REFERENCE_80806_129_FORMAT["work_instruction_page"]["header_fields"]),
         "operation_order": "①准备物料==②设定尺寸==③裁线==④自检品质==⑤作业完成",
         "step_slots": step_slots,
+        "parameter_sections": _default_parameter_sections(),
         "ie_time_study": _default_work_ie_time_study(step_slots),
         "side_sections": [
             {"title": title, "lines": _default_side_lines(title)}
@@ -1037,33 +1044,78 @@ def _render_work_instruction_word_table(document: Any, page: dict[str, Any]) -> 
     _set_word_cell(header.cell(2, 4), "作业顺序", shaded=True, bold=True)
     _set_word_cell(header.cell(2, 5).merge(header.cell(2, 7)), str(page.get("operation_order") or ""), align=WD_ALIGN_PARAGRAPH.LEFT)
 
-    body = document.add_table(rows=6, cols=5)
+    slot_count = _normalize_work_image_slots(
+        page.get("work_image_slots") or len(page.get("step_slots") or []) or DEFAULT_WORK_IMAGE_SLOTS
+    )
+    layout = _work_image_layout(slot_count)
+    font_sizes = _work_image_font_sizes(slot_count)
+    body = document.add_table(rows=8, cols=8)
     body.alignment = WD_TABLE_ALIGNMENT.CENTER
     body.autofit = False
     _set_table_borders(body)
-    for row_index in [0, 1, 3, 4]:
-        _set_row_height(body.rows[row_index], 1000)
-    for row_index in [2, 5]:
-        _set_row_height(body.rows[row_index], 580)
+    step_by_slot = {int(slot.get("slot_no")): slot for slot in page.get("step_slots", [])}
+    caption_line_count = _work_image_caption_line_count(list(step_by_slot.values()))
+    for row, height in zip(body.rows, _work_image_body_row_heights(slot_count, caption_line_count)):
+        _set_row_height(row, height)
+    column_widths = [1.45, 3.45, 3.45, 3.45, 3.45, 3.45, 3.45, 5.55]
+    for row in body.rows:
+        for column, width in enumerate(column_widths):
+            _set_word_cell_width(row.cells[column], width)
 
     left_label = body.cell(0, 0).merge(body.cell(5, 0))
     _set_word_cell(left_label, "图片流程描述及说明", bold=True, size=12)
     _set_word_cell_text_direction(left_label, "tbRl")
 
-    step_by_slot = {int(slot.get("slot_no")): slot for slot in page.get("step_slots", [])}
-    for column_offset, slot_no in enumerate([1, 2, 3], start=1):
-        image_cell = body.cell(0, column_offset).merge(body.cell(1, column_offset))
-        _fill_word_step_cells(image_cell, body.cell(2, column_offset), step_by_slot.get(slot_no), slot_no)
-    for column_offset, slot_no in enumerate([6, 5, 4], start=1):
-        image_cell = body.cell(3, column_offset).merge(body.cell(4, column_offset))
-        _fill_word_step_cells(image_cell, body.cell(5, column_offset), step_by_slot.get(slot_no), slot_no)
+    for item in layout:
+        image_cell = body.cell(item["image_row_start"], item["column_start"]).merge(
+            body.cell(item["image_row_end"], item["column_end"])
+        )
+        text_cell = body.cell(item["caption_row"], item["column_start"]).merge(
+            body.cell(item["caption_row"], item["column_end"])
+        )
+        column_span = item["column_end"] - item["column_start"] + 1
+        _fill_word_step_cells(
+            image_cell,
+            text_cell,
+            step_by_slot.get(item["slot_no"]),
+            item["slot_no"],
+            image_width_cm=column_span * 3.45 - 0.5,
+            image_height_cm=(
+                4.5 if slot_count <= 3 else 1.9 if slot_count == 6 else 2.0
+            ),
+            placeholder_size=font_sizes["placeholder"],
+            caption_size=font_sizes["caption"],
+        )
 
     for row_index, section in enumerate(page.get("side_sections", [])):
         lines = [str(line) for line in section.get("lines", [])]
         section_text = str(section.get("title") or "")
         if lines:
             section_text = section_text + "\n" + "\n".join(lines)
-        _set_word_cell(body.cell(row_index, 4), section_text, size=7, align=WD_ALIGN_PARAGRAPH.LEFT)
+        side_cell = body.cell(row_index, 7)
+        _set_word_cell(side_cell, section_text, size=font_sizes["side"], align=WD_ALIGN_PARAGRAPH.LEFT)
+        title_runs = [run for paragraph in side_cell.paragraphs for run in paragraph.runs if run.text.strip()]
+        if title_runs:
+            title_runs[0].bold = True
+            title_runs[0].font.size = Pt(max(8, font_sizes["side"]))
+        _set_word_cell_margins(side_cell, top=30, start=70, bottom=30, end=70)
+
+    parameter_map = {
+        str(section.get("title") or ""): [str(line) for line in section.get("lines") or []]
+        for section in page.get("parameter_sections") or _default_parameter_sections()
+    }
+    for row_index, title in enumerate(SOP_PARAMETER_SECTION_TITLES, start=6):
+        title_cell = body.cell(row_index, 0)
+        _set_word_cell(title_cell, title, bold=True, size=8, shaded=True)
+        _set_word_cell_margins(title_cell, top=20, start=60, bottom=20, end=60)
+        content_cell = body.cell(row_index, 1).merge(body.cell(row_index, 7))
+        _set_word_cell(
+            content_cell,
+            "；".join(parameter_map.get(title) or ["待确认"]),
+            size=8,
+            align=WD_ALIGN_PARAGRAPH.LEFT,
+        )
+        _set_word_cell_margins(content_cell, top=20, start=60, bottom=20, end=60)
 
     _render_ie_time_study_word_table(document, page, scope="work_instruction")
 
@@ -1071,32 +1123,166 @@ def _render_work_instruction_word_table(document: Any, page: dict[str, Any]) -> 
     footer.alignment = WD_TABLE_ALIGNMENT.CENTER
     footer.autofit = False
     _set_table_borders(footer)
-    _set_row_height(footer.rows[0], 360)
-    _set_row_height(footer.rows[1], 560)
+    _set_row_height(footer.rows[0], 240)
+    _set_row_height(footer.rows[1], 280)
     signoff_labels = ["批准", "审核", "制作", "材料环保要求", "管制文件（印章处）", "图号"]
     for column, label in enumerate(signoff_labels):
         _set_word_cell(footer.cell(0, column), label, shaded=True, bold=True)
+        _set_word_cell_margins(footer.cell(0, column), top=20, start=60, bottom=20, end=60)
     _set_word_cell(footer.cell(1, 0), "")
     _set_word_cell(footer.cell(1, 1), "")
     _set_word_cell(footer.cell(1, 2), "")
     _set_word_cell(footer.cell(1, 3), _bottom_value(page, "材料环保要求") or "所有材料须符合RoHS要求", align=WD_ALIGN_PARAGRAPH.LEFT)
     _set_word_cell(footer.cell(1, 4), "")
     _set_word_cell(footer.cell(1, 5), _bottom_value(page, "图号") or str(page.get("drawing_no") or ""), align=WD_ALIGN_PARAGRAPH.LEFT)
+    for cell in footer.rows[1].cells:
+        _set_word_cell_margins(cell, top=20, start=60, bottom=20, end=60)
 
 
-def _fill_word_step_cells(image_cell: Any, text_cell: Any, slot: dict[str, Any] | None, slot_no: int) -> None:
+def _normalize_work_image_slots(value: Any) -> int:
+    try:
+        slot_count = int(value)
+    except (TypeError, ValueError):
+        slot_count = DEFAULT_WORK_IMAGE_SLOTS
+    if slot_count < 1 or slot_count > 6:
+        raise ValueError("work image layout must contain 1 to 6 slots")
+    return slot_count
+
+
+def _work_image_layout(slot_count: int) -> list[dict[str, int]]:
+    count = _normalize_work_image_slots(slot_count)
+    layouts: dict[int, list[tuple[int, int, int, int, int, int]]] = {
+        1: [(1, 0, 4, 1, 6, 5)],
+        2: [(1, 0, 4, 1, 3, 5), (2, 0, 4, 4, 6, 5)],
+        3: [(1, 0, 4, 1, 2, 5), (2, 0, 4, 3, 4, 5), (3, 0, 4, 5, 6, 5)],
+        4: [
+            (1, 0, 1, 1, 3, 2), (2, 0, 1, 4, 6, 2),
+            (4, 3, 4, 1, 3, 5), (3, 3, 4, 4, 6, 5),
+        ],
+        5: [
+            (1, 0, 1, 1, 2, 2), (2, 0, 1, 3, 4, 2), (3, 0, 1, 5, 6, 2),
+            (5, 3, 4, 1, 3, 5), (4, 3, 4, 4, 6, 5),
+        ],
+        6: [
+            (1, 0, 1, 1, 2, 2), (2, 0, 1, 3, 4, 2), (3, 0, 1, 5, 6, 2),
+            (6, 3, 4, 1, 2, 5), (5, 3, 4, 3, 4, 5), (4, 3, 4, 5, 6, 5),
+        ],
+    }
+    return [
+        {
+            "slot_no": slot_no,
+            "image_row_start": image_row_start,
+            "image_row_end": image_row_end,
+            "column_start": column_start,
+            "column_end": column_end,
+            "caption_row": caption_row,
+        }
+        for slot_no, image_row_start, image_row_end, column_start, column_end, caption_row
+        in layouts[count]
+    ]
+
+
+def _work_image_caption_line_count(step_slots: list[dict[str, Any]]) -> int:
+    return max(
+        (
+            len([
+                line
+                for line in _clean_step_text(str(slot.get("text_placeholder") or "")).splitlines()
+                if line.strip()
+            ])
+            for slot in step_slots
+        ),
+        default=1,
+    )
+
+
+def _work_image_body_row_heights(slot_count: int, caption_line_count: int = 1) -> list[int]:
+    count = _normalize_work_image_slots(slot_count)
+    caption_height = min(1400, 600 + max(0, int(caption_line_count) - 1) * 240)
+    if count <= 3:
+        # Trade unused image space for longer instructions while keeping the
+        # complete body, IE rows, and sign-off area on one landscape page.
+        image_height = max(560, (4920 - caption_height - 720) // 5)
+        return [image_height] * 5 + [caption_height, 280, 280]
+    # Keep every layout within the same A4 landscape page budget. Larger
+    # minimums make LibreOffice push the footer onto a separate blank page.
+    image_height = 600 if count == 6 else 630
+    return [
+        image_height,
+        image_height,
+        caption_height,
+        image_height,
+        image_height,
+        caption_height,
+        280,
+        280,
+    ]
+
+
+def _work_image_font_sizes(slot_count: int) -> dict[str, float]:
+    count = _normalize_work_image_slots(slot_count)
+    return {
+        "caption": {1: 10.5, 2: 9.5, 3: 8.5, 4: 8.0, 5: 7.5, 6: 7.0}[count],
+        "placeholder": {1: 16.0, 2: 14.0, 3: 13.0, 4: 12.0, 5: 11.0, 6: 10.0}[count],
+        "side": {1: 8.5, 2: 8.5, 3: 8.0, 4: 8.0, 5: 7.5, 6: 7.5}[count],
+        "ie": {1: 8.5, 2: 8.0, 3: 7.5, 4: 7.5, 5: 7.5, 6: 7.5}[count],
+    }
+
+
+def _work_image_order_label(slot_count: int) -> str:
+    count = _normalize_work_image_slots(slot_count)
+    return {
+        1: "1",
+        2: "1,2",
+        3: "1,2,3",
+        4: "1,2 / 4,3",
+        5: "1,2,3 / 5,4",
+        6: "1,2,3 / 6,5,4",
+    }[count]
+
+
+def _fill_word_step_cells(
+    image_cell: Any,
+    text_cell: Any,
+    slot: dict[str, Any] | None,
+    slot_no: int,
+    *,
+    image_width_cm: float = 4.7,
+    image_height_cm: float = 2.15,
+    placeholder_size: float = 12,
+    caption_size: float = 7,
+) -> None:
     slot = slot or {"slot_no": slot_no, "image_label": "图片占位", "text_placeholder": ""}
     step_text = _clean_step_text(str(slot.get("text_placeholder") or ""))
     image_path = Path(str(slot.get("image_path") or ""))
     if image_path.is_file():
-        _fill_word_image_cell(image_cell, image_path, slot_no)
+        _fill_word_image_cell(
+            image_cell,
+            image_path,
+            slot_no,
+            max_width_cm=image_width_cm,
+            max_height_cm=image_height_cm,
+        )
     else:
         image_text = _slot_image_cell(slot)
-        _set_word_cell(image_cell, f"{slot_no}\n{image_text}", bold=True, size=12, color="D40000")
-    _set_word_cell(text_cell, f"{slot_no}. {step_text}" if step_text else f"{slot_no}. ", align=WD_ALIGN_PARAGRAPH.LEFT)
+        _set_word_cell(image_cell, f"{slot_no}\n{image_text}", bold=True, size=placeholder_size, color="D40000")
+    _set_word_cell(
+        text_cell,
+        f"{slot_no}. {step_text}" if step_text else f"{slot_no}. ",
+        size=caption_size,
+        align=WD_ALIGN_PARAGRAPH.LEFT,
+    )
+    _set_word_cell_margins(text_cell, top=40, start=80, bottom=40, end=80)
 
 
-def _fill_word_image_cell(cell: Any, image_path: Path, slot_no: int) -> None:
+def _fill_word_image_cell(
+    cell: Any,
+    image_path: Path,
+    slot_no: int,
+    *,
+    max_width_cm: float = 4.7,
+    max_height_cm: float = 2.15,
+) -> None:
     from PIL import Image
 
     _clear_word_cell(cell)
@@ -1114,7 +1300,6 @@ def _fill_word_image_cell(cell: Any, image_path: Path, slot_no: int) -> None:
     picture.paragraph_format.space_after = Pt(0)
     with Image.open(image_path) as source:
         width_px, height_px = source.size
-    max_width_cm, max_height_cm = 4.7, 2.15
     scale = min(max_width_cm / max(width_px, 1), max_height_cm / max(height_px, 1))
     picture.add_run().add_picture(
         str(image_path), width=Cm(max(width_px * scale, 0.25)), height=Cm(max(height_px * scale, 0.25))
@@ -1146,16 +1331,27 @@ def _render_ie_time_study_word_table(document: Any, page: dict[str, Any], *, sco
     _set_row_height(table.rows[0], 260)
     _set_row_height(table.rows[1], 260)
     for row in table.rows[2:]:
-        _set_row_height(row, 240)
+        _set_row_height(row, 220)
 
     title_cell = table.cell(0, 0).merge(table.cell(0, len(fields) - 1))
     title = str(ie_time_study.get("title") or "IE工时记录")
-    _set_word_cell(title_cell, f"{title}（随生产实绩动态调整）", bold=True, size=8, shaded=True)
+    _set_word_cell(title_cell, f"{title}（随生产实绩动态调整）", bold=True, size=9, shaded=True)
+    _set_word_cell_margins(title_cell, top=20, start=40, bottom=20, end=40)
+    content_size = 7.5
+    if scope == "work_instruction":
+        slot_count = _normalize_work_image_slots(
+            page.get("work_image_slots") or len(page.get("step_slots") or []) or DEFAULT_WORK_IMAGE_SLOTS
+        )
+        content_size = _work_image_font_sizes(slot_count)["ie"]
     for col_index, field in enumerate(fields):
-        _set_word_cell(table.cell(1, col_index), str(field), bold=True, size=6, shaded=True)
+        cell = table.cell(1, col_index)
+        _set_word_cell(cell, str(field), bold=True, size=content_size, shaded=True)
+        _set_word_cell_margins(cell, top=20, start=40, bottom=20, end=40)
     for row_index, row in enumerate(rows, start=2):
         for col_index, field in enumerate(fields):
-            _set_word_cell(table.cell(row_index, col_index), str(row.get(field, "")), size=6, align=WD_ALIGN_PARAGRAPH.CENTER)
+            cell = table.cell(row_index, col_index)
+            _set_word_cell(cell, str(row.get(field, "")), size=content_size, align=WD_ALIGN_PARAGRAPH.CENTER)
+            _set_word_cell_margins(cell, top=20, start=40, bottom=20, end=40)
 
 
 def _write_word_manifest(path: Path, document_name: str, demo: dict[str, Any] | None) -> None:
@@ -1210,6 +1406,7 @@ def _write_word_format_check_json(path: Path, flow_page: dict[str, Any], work_pa
                 "status": "match" if center_style == "pdf_reference_shape_blocks" else "not_applicable",
             },
             {"check_item": "work_instruction_image_slots", "reference": 6, "generated": len(work_page["step_slots"]), "status": _match("6", str(len(work_page["step_slots"])))},
+            {"check_item": "parameter_sections", "reference": SOP_PARAMETER_SECTION_TITLES, "generated": [section["title"] for section in work_page.get("parameter_sections") or []], "status": "match"},
             {"check_item": "right_side_sections", "reference": REFERENCE_80806_129_FORMAT["work_instruction_page"]["right_sections"], "generated": [section["title"] for section in work_page["side_sections"]], "status": "match"},
             {"check_item": "bottom_sections", "reference": REFERENCE_80806_129_FORMAT["work_instruction_page"]["bottom_sections"], "generated": [section["title"] for section in work_page["bottom_sections"]], "status": "match"},
         ]
@@ -1222,7 +1419,7 @@ def _set_word_cell(
     text: str,
     *,
     bold: bool = False,
-    size: int = 9,
+    size: float = 9,
     color: str | None = None,
     shaded: bool = False,
     align: Any = WD_ALIGN_PARAGRAPH.CENTER,
@@ -1429,18 +1626,20 @@ def _render_work_instruction_layout_sheet(sheet: Any, page: dict[str, Any]) -> N
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.paperSize = 9
     sheet.page_margins = PageMargins(left=0.2, right=0.2, top=0.25, bottom=0.25)
-    sheet.print_area = "A1:AM35"
+    sheet.print_area = "A1:AM37"
     sheet.freeze_panes = "A5"
     for column in range(1, 40):
         sheet.column_dimensions[_column_letter(column)].width = 3.15
-    for row in range(1, 36):
+    for row in range(1, 38):
         sheet.row_dimensions[row].height = 18
     for row in [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]:
         sheet.row_dimensions[row].height = 22
     sheet.row_dimensions[16].height = 24
     sheet.row_dimensions[29].height = 24
+    sheet.row_dimensions[32].height = 24
+    sheet.row_dimensions[33].height = 24
 
-    _apply_range_border(sheet, "A1:AM35", _thin_border())
+    _apply_range_border(sheet, "A1:AM37", _thin_border())
     _merge_value(sheet, "A1:H1", "产品品名", fill=_label_fill())
     _merge_value(sheet, "A2:H2", str(page.get("product_name") or ""))
     _merge_value(sheet, "I1:N1", "本厂料号", fill=_label_fill())
@@ -1507,17 +1706,31 @@ def _render_work_instruction_layout_sheet(sheet: Any, page: dict[str, Any]) -> N
             content = "\n".join(str(line) for line in lines)
             _merge_value(sheet, content_range, content, font=Font(name="SimSun", size=9), align=_left(wrap=True), fill=PatternFill("solid", fgColor="FFFFFF"))
 
-    _merge_value(sheet, "A32:F33", "批准", font=Font(name="SimSun", size=14, bold=True))
-    _merge_value(sheet, "A34:F35", "")
-    _merge_value(sheet, "G32:L33", "审核", font=Font(name="SimSun", size=14, bold=True))
-    _merge_value(sheet, "G34:L35", "")
-    _merge_value(sheet, "M32:R33", "制作", font=Font(name="SimSun", size=14, bold=True))
-    _merge_value(sheet, "M34:R35", "")
-    _merge_value(sheet, "S32:Z33", "材料环保要求", font=Font(name="SimSun", size=14, bold=True))
-    _merge_value(sheet, "S34:Z35", _bottom_value(page, "材料环保要求") or "所有材料须符合RoHS要求", font=Font(name="SimSun", size=10), align=_left(wrap=True))
-    _merge_value(sheet, "AA32:AM33", "管制文件（印章处）", font=Font(name="SimSun", size=15, bold=True))
-    _merge_value(sheet, "AA34:AC35", "图号", font=Font(name="SimSun", size=11, bold=True))
-    _merge_value(sheet, "AD34:AM35", _bottom_value(page, "图号") or str(page.get("drawing_no") or ""), font=Font(name="Arial", size=10))
+    parameter_map = {
+        str(section.get("title") or ""): [str(line) for line in section.get("lines") or []]
+        for section in page.get("parameter_sections") or _default_parameter_sections()
+    }
+    for row, title in zip([32, 33], SOP_PARAMETER_SECTION_TITLES):
+        _merge_value(sheet, f"A{row}:F{row}", title, font=Font(name="SimSun", size=10, bold=True), fill=_label_fill())
+        _merge_value(
+            sheet,
+            f"G{row}:AM{row}",
+            "；".join(parameter_map.get(title) or ["待确认"]),
+            font=Font(name="SimSun", size=9),
+            align=_left(wrap=True),
+        )
+
+    _merge_value(sheet, "A34:F35", "批准", font=Font(name="SimSun", size=14, bold=True))
+    _merge_value(sheet, "A36:F37", "")
+    _merge_value(sheet, "G34:L35", "审核", font=Font(name="SimSun", size=14, bold=True))
+    _merge_value(sheet, "G36:L37", "")
+    _merge_value(sheet, "M34:R35", "制作", font=Font(name="SimSun", size=14, bold=True))
+    _merge_value(sheet, "M36:R37", "")
+    _merge_value(sheet, "S34:Z35", "材料环保要求", font=Font(name="SimSun", size=14, bold=True))
+    _merge_value(sheet, "S36:Z37", _bottom_value(page, "材料环保要求") or "所有材料须符合RoHS要求", font=Font(name="SimSun", size=10), align=_left(wrap=True))
+    _merge_value(sheet, "AA34:AM35", "管制文件（印章处）", font=Font(name="SimSun", size=15, bold=True))
+    _merge_value(sheet, "AA36:AC37", "图号", font=Font(name="SimSun", size=11, bold=True))
+    _merge_value(sheet, "AD36:AM37", _bottom_value(page, "图号") or str(page.get("drawing_no") or ""), font=Font(name="Arial", size=10))
 
 
 def _write_excel_manifest(path: Path, workbook_name: str, demo: dict[str, Any] | None) -> None:
@@ -1548,6 +1761,7 @@ def _write_excel_format_check_json(path: Path, flow_page: dict[str, Any], work_p
             {"check_item": "flow_body_area", "reference": "large blank flowchart fill area", "generated": "B10:Q54", "status": "match"},
             {"check_item": "work_sheet_orientation", "reference": "landscape", "generated": work_page["orientation"], "status": "match"},
             {"check_item": "work_instruction_image_slots", "reference": 6, "generated": len(work_page["step_slots"]), "status": _match("6", str(len(work_page["step_slots"])))},
+            {"check_item": "parameter_sections", "reference": SOP_PARAMETER_SECTION_TITLES, "generated": [section["title"] for section in work_page.get("parameter_sections") or []], "status": "match"},
             {"check_item": "right_side_sections", "reference": REFERENCE_80806_129_FORMAT["work_instruction_page"]["right_sections"], "generated": [section["title"] for section in work_page["side_sections"]], "status": "match"},
             {"check_item": "bottom_sections", "reference": REFERENCE_80806_129_FORMAT["work_instruction_page"]["bottom_sections"], "generated": [section["title"] for section in work_page["bottom_sections"]], "status": "match"},
         ]
@@ -1824,38 +2038,44 @@ def _work_header_svg(page: dict[str, Any]) -> list[str]:
 
 def _work_step_grid_svg(page: dict[str, Any]) -> list[str]:
     lines: list[str] = []
-    left_x = 48
-    top_y = 98
-    slot_w = 160
-    slot_h = 203
-    positions = [
-        (left_x, top_y),
-        (left_x + slot_w + 20, top_y),
-        (left_x + (slot_w + 20) * 2, top_y),
-        (left_x + (slot_w + 20) * 2, top_y + slot_h + 24),
-        (left_x + slot_w + 20, top_y + slot_h + 24),
-        (left_x, top_y + slot_h + 24),
-    ]
-    for slot, (x, y) in zip(page.get("step_slots", []), positions):
+    slot_count = _normalize_work_image_slots(
+        page.get("work_image_slots") or len(page.get("step_slots") or []) or DEFAULT_WORK_IMAGE_SLOTS
+    )
+    row_orders = {
+        1: [[1]],
+        2: [[1, 2]],
+        3: [[1, 2, 3]],
+        4: [[1, 2], [4, 3]],
+        5: [[1, 2, 3], [5, 4]],
+        6: [[1, 2, 3], [6, 5, 4]],
+    }[slot_count]
+    left_x, top_y, area_width, area_height, gap = 48.0, 98.0, 504.0, 434.0, 12.0
+    row_height = (area_height - gap * (len(row_orders) - 1)) / len(row_orders)
+    positions: dict[int, tuple[float, float, float, float]] = {}
+    for row_index, row_slots in enumerate(row_orders):
+        slot_width = (area_width - gap * (len(row_slots) - 1)) / len(row_slots)
+        y = top_y + row_index * (row_height + gap)
+        for column_index, slot_no in enumerate(row_slots):
+            x = left_x + column_index * (slot_width + gap)
+            positions[slot_no] = (x, y, slot_width, row_height)
+
+    font_sizes = _work_image_font_sizes(slot_count)
+    slot_by_number = {int(slot.get("slot_no") or 0): slot for slot in page.get("step_slots", [])}
+    for slot_no in range(1, slot_count + 1):
+        slot = slot_by_number.get(slot_no, {"slot_no": slot_no, "image_label": "图片占位"})
+        x, y, slot_w, slot_h = positions[slot_no]
+        image_height = max(72.0, slot_h * (0.72 if slot_count <= 3 else 0.66))
         lines.append(f'<rect x="{x}" y="{y}" width="{slot_w}" height="{slot_h}" fill="#fff" stroke="#111" stroke-width="1"/>')
-        lines.append(f'<rect x="{x + 4}" y="{y + 4}" width="{slot_w - 8}" height="132" fill="#f5f6f7" stroke="#888" stroke-width="0.6"/>')
+        lines.append(f'<rect x="{x + 4}" y="{y + 4}" width="{slot_w - 8}" height="{image_height - 8}" fill="#f5f6f7" stroke="#888" stroke-width="0.6"/>')
         if slot.get("visual"):
-            lines.append(_step_visual_svg(slot["visual"], x + 4, y + 4, slot_w - 8, 132))
+            lines.append(_step_visual_svg(slot["visual"], x + 4, y + 4, slot_w - 8, image_height - 8))
         else:
-            lines.append(f'<text x="{x + slot_w / 2:.1f}" y="{y + 75:.1f}" font-size="16" text-anchor="middle" fill="#9a9a9a" font-family="SimSun, Microsoft YaHei, Arial">{escape(slot.get("image_label", "图片占位"))}</text>')
+            lines.append(f'<text x="{x + slot_w / 2:.1f}" y="{y + image_height / 2 + 5:.1f}" font-size="{font_sizes["placeholder"]}" text-anchor="middle" fill="#9a9a9a" font-family="SimSun, Microsoft YaHei, Arial">{escape(slot.get("image_label", "图片占位"))}</text>')
         lines.append(f'<circle cx="{x + 18}" cy="{y + 18}" r="12" fill="none" stroke="#ff0000" stroke-width="1.4"/>')
         lines.append(f'<text x="{x + 14}" y="{y + 23}" font-size="16" fill="#ff0000" font-family="Arial">{slot.get("slot_no")}</text>')
-        lines.append(f'<line x1="{x}" y1="{y + 140}" x2="{x + slot_w}" y2="{y + 140}" stroke="#111" stroke-width="1"/>')
-        _append_wrapped_text(lines, str(slot.get("text_placeholder", "")), x + 6, y + 156, slot_w - 12, 10)
-    arrow_pairs = [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6)]
-    centers = [(x + slot_w / 2, y + slot_h / 2) for x, y in positions]
-    for start, end in arrow_pairs:
-        x1, y1 = centers[start - 1]
-        x2, y2 = centers[end - 1]
-        if start == 3:
-            lines.append(f'<line x1="{x1:.1f}" y1="{y1 + 96:.1f}" x2="{x2:.1f}" y2="{y2 - 96:.1f}" stroke="#d40000" stroke-width="2.2" marker-end="url(#arrow)"/>')
-        else:
-            lines.append(f'<line x1="{x1 + (slot_w / 2 - 3 if x2 > x1 else -slot_w / 2 + 3):.1f}" y1="{y1:.1f}" x2="{x2 + (-slot_w / 2 + 3 if x2 > x1 else slot_w / 2 - 3):.1f}" y2="{y2:.1f}" stroke="#d40000" stroke-width="2.2" marker-end="url(#arrow)"/>')
+        lines.append(f'<line x1="{x}" y1="{y + image_height}" x2="{x + slot_w}" y2="{y + image_height}" stroke="#111" stroke-width="1"/>')
+        text_size = max(9, int(round(font_sizes["caption"])))
+        _append_wrapped_text(lines, str(slot.get("text_placeholder", "")), x + 6, y + image_height + 16, slot_w - 12, text_size)
     return lines
 
 
@@ -1914,6 +2134,13 @@ def _default_side_lines(title: str) -> list[str]:
         "物料表": ["NO / 物料编号 / 物料规格 / 单位用量"],
     }
     return mapping.get(title, [])
+
+
+def _default_parameter_sections() -> list[dict[str, Any]]:
+    return [
+        {"title": "技术参数", "lines": ["规格：待确认", "公差：待确认", "材质：待确认"], "status": "needs_confirmation"},
+        {"title": "生产参数", "lines": ["线速：待确认", "模具号：待确认", "模数：待确认"], "status": "needs_confirmation"},
+    ]
 
 
 def _default_process_ie_time_study(flow_nodes: list[dict[str, Any]]) -> dict[str, Any]:

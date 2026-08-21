@@ -24,6 +24,13 @@
 python -m unittest discover -s tests -p "test_sop_*.py" -v
 ```
 
+准备上传或发 PR 前，必须完整执行
+`docs/handoff/sop_template_ai_handoff/DOCX_PREVIEW_UPLOAD_CHECKLIST.md`。
+特别确认 `scripts/render_pdf_pages.py` 已被 Git 跟踪、8787 端口只有一个监听服务，
+并通过真实路线的 PDF/PNG 预览生成检查。
+服务器发布还必须执行 `docs/deployment/server-preview-deployment.md`，Linux 预览使用
+LibreOffice，首版 SQLite/本地生成目录架构只能运行一个 Uvicorn worker。
+
 ## 当前自然语言定位规则
 
 - 工序定位必须先经过 `cad_ai.sop_knowledge.targeting`，LLM 不能自行绕过目标解析结果；

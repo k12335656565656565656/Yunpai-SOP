@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+set -eu
+
+staged_files=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if printf '%s\n' "$staged_files" | grep -Eq '^(latest-check\.docx|tests/\.edge-|tests/screenshots/|playwright-report/|test-results/|server-data/|outputs/)'; then
+  echo "Commit blocked: generated previews, browser data, or runtime output is staged." >&2
+  echo "Keep source code and repeatable test scripts only." >&2
+  exit 1
+fi
+
+if printf '%s\n' "$staged_files" | grep -Eiq '(^|/)(\.env($|\.)|.*\.(pem|key)$)'; then
+  echo "Commit blocked: a secret or private key path is staged." >&2
+  exit 1
+fi

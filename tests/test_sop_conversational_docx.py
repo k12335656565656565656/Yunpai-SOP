@@ -3,13 +3,21 @@ from __future__ import annotations
 import tempfile
 import unittest
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 from cad_ai.sop_knowledge.conversation import SopConversationService
-from cad_ai.sop_knowledge.documents import CURRENT_PREVIEW_DIR_NAME, MULTI_PAGE_TEMPLATE_ID, SopDocumentService
+from cad_ai.sop_knowledge.documents import (
+    CURRENT_PREVIEW_DIR_NAME,
+    MULTI_PAGE_TEMPLATE_ID,
+    VERSIONED_PREVIEW_DIR_PREFIX,
+    SopDocumentService,
+)
 from cad_ai.sop_knowledge.models import RouteSectionDraft
 from cad_ai.sop_knowledge.nl_assistant import NaturalLanguageSopAssistant
 from cad_ai.sop_knowledge.store import SopKnowledgeStore
@@ -332,6 +340,74 @@ class SopConversationalDocxTests(unittest.TestCase):
         after = documents._route_fingerprint(self.route_id)
         self.assertNotEqual(before, after)
 
+    def test_linux_preview_conversion_uses_libreoffice_backend(self) -> None:
+        documents = SopDocumentService(self.store)
+        docx_path = Path(self.temp.name) / "source.docx"
+        output_dir = Path(self.temp.name) / "preview"
+        expected_pdf = output_dir / "source.pdf"
+
+        with (
+            patch("cad_ai.sop_knowledge.documents.sys.platform", "linux"),
+            patch.object(
+                documents,
+                "_convert_docx_with_libreoffice",
+                return_value=expected_pdf,
+            ) as convert_libreoffice,
+            patch.object(documents, "_convert_docx_with_windows") as convert_windows,
+        ):
+            result = documents._convert_docx_to_pdf(docx_path, output_dir)
+
+        self.assertEqual(result, expected_pdf)
+        convert_libreoffice.assert_called_once_with(docx_path, output_dir)
+        convert_windows.assert_not_called()
+
+    def test_document_runtime_status_reports_server_converter(self) -> None:
+        documents = SopDocumentService(self.store)
+
+        with (
+            patch("cad_ai.sop_knowledge.documents.sys.platform", "linux"),
+            patch.object(
+                documents,
+                "_find_libreoffice_executable",
+                return_value=Path("/usr/bin/libreoffice"),
+            ),
+        ):
+            status = documents.runtime_status()
+
+        self.assertEqual(status["status"], "ready")
+        self.assertEqual(status["platform"], "linux")
+        self.assertEqual(status["docx_converter"]["backend"], "LibreOffice")
+        self.assertTrue(status["pdf_renderer"]["available"])
+        self.assertTrue(status["storage"]["available"])
+
+    def test_real_libreoffice_backend_converts_docx_when_available(self) -> None:
+        from docx import Document
+        from PIL import Image
+
+        documents = SopDocumentService(self.store)
+        executable = documents._find_libreoffice_executable()
+        if executable is None:
+            self.skipTest("LibreOffice is not installed in this environment")
+
+        fixture_dir = Path(self.temp.name) / "服务器预览"
+        output_dir = fixture_dir / "转换结果"
+        fixture_dir.mkdir(parents=True)
+        docx_path = fixture_dir / "预览检查.docx"
+        document = Document()
+        document.add_heading("SOP preview readiness", level=1)
+        document.add_paragraph("LibreOffice and PyMuPDF must both produce readable artifacts.")
+        document.save(docx_path)
+
+        pdf_path = documents._convert_docx_with_libreoffice(docx_path, output_dir)
+        page_paths = documents._render_pdf_pages(pdf_path, output_dir)
+
+        self.assertTrue(pdf_path.is_file())
+        self.assertGreater(pdf_path.stat().st_size, 0)
+        self.assertEqual(len(page_paths), 1)
+        self.assertGreater(page_paths[0].stat().st_size, 0)
+        with Image.open(page_paths[0]) as preview_page:
+            self.assertGreaterEqual(preview_page.width, 1400)
+
     def test_preview_failure_keeps_existing_pdf_and_pages(self) -> None:
         documents = SopDocumentService(self.store)
         output_dir = documents.root / f"route_{self.route_id}" / "preview"
@@ -344,12 +420,44 @@ class SopConversationalDocxTests(unittest.TestCase):
         docx_path.write_bytes(b"new-docx")
 
         failed = SimpleNamespace(returncode=1, stdout="", stderr="Word COM unavailable")
-        with patch("cad_ai.sop_knowledge.documents.subprocess.run", return_value=failed):
+        with (
+            patch("cad_ai.sop_knowledge.documents.sys.platform", "win32"),
+            patch.object(
+                documents,
+                "_windows_powershell_executable",
+                return_value=Path(r"C:\Windows\powershell.exe"),
+            ),
+            patch("cad_ai.sop_knowledge.documents.subprocess.run", return_value=failed),
+        ):
             with self.assertRaisesRegex(RuntimeError, "Word COM unavailable"):
                 documents._render_preview(docx_path, output_dir)
 
         self.assertEqual(old_pdf.read_bytes(), b"existing-pdf")
         self.assertEqual(old_page.read_bytes(), b"existing-page")
+
+    def test_preview_publish_uses_versioned_directory_when_current_preview_is_locked(self) -> None:
+        documents = SopDocumentService(self.store)
+        route_dir = documents.root / f"route_{self.route_id}"
+        current_dir = route_dir / CURRENT_PREVIEW_DIR_NAME
+        candidate_dir = route_dir / "preview-candidate"
+        current_dir.mkdir(parents=True)
+        candidate_dir.mkdir()
+        (current_dir / "old.pdf").write_bytes(b"old-preview")
+        (candidate_dir / "new.pdf").write_bytes(b"new-preview")
+
+        real_replace = os.replace
+
+        def replace_with_locked_current(source: Path, destination: Path) -> None:
+            if Path(source) == current_dir:
+                raise PermissionError("preview directory is in use")
+            real_replace(source, destination)
+
+        with patch("cad_ai.sop_knowledge.documents.os.replace", side_effect=replace_with_locked_current):
+            published_dir = documents._publish_preview_directory(candidate_dir, current_dir)
+
+        self.assertTrue(published_dir.name.startswith(VERSIONED_PREVIEW_DIR_PREFIX))
+        self.assertEqual((published_dir / "new.pdf").read_bytes(), b"new-preview")
+        self.assertEqual((current_dir / "old.pdf").read_bytes(), b"old-preview")
 
     def test_latest_returns_persisted_preview_failure_without_retrying(self) -> None:
         documents = SopDocumentService(self.store)
@@ -422,9 +530,7 @@ class SopConversationalDocxTests(unittest.TestCase):
         self.assertEqual(result, regenerated)
         generate.assert_called_once_with(self.route_id)
 
-    def test_latest_repairs_missing_preview_pages_from_existing_pdf(self) -> None:
-        import pymupdf
-
+    def test_latest_regenerates_incomplete_manifest_without_reopening_old_pdf(self) -> None:
         documents = SopDocumentService(self.store)
         output_dir = documents.root / f"route_{self.route_id}"
         preview_dir = output_dir / CURRENT_PREVIEW_DIR_NAME
@@ -433,10 +539,7 @@ class SopConversationalDocxTests(unittest.TestCase):
         docx_path = output_dir / "test.docx"
         pdf_path = preview_dir / "test.pdf"
         docx_path.write_bytes(b"test-docx")
-        pdf = pymupdf.open()
-        pdf.new_page(width=595, height=842).insert_text((72, 72), "preview page")
-        pdf.save(pdf_path)
-        pdf.close()
+        pdf_path.write_bytes(b"locked-preview-pdf")
         manifest = {
             "route_id": self.route_id,
             "route_version": 1,
@@ -458,12 +561,165 @@ class SopConversationalDocxTests(unittest.TestCase):
         }
         (output_dir / "document_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-        result = documents.latest(self.route_id)
+        regenerated = {"version_token": "fresh-preview"}
+        with (
+            patch.object(documents, "generate", return_value=regenerated) as generate,
+            patch.object(documents, "_render_pdf_pages", side_effect=PermissionError("PDF is locked")) as render_pages,
+        ):
+            result = documents.latest(self.route_id)
 
+        self.assertEqual(result, regenerated)
+        generate.assert_called_once_with(self.route_id)
+        render_pages.assert_not_called()
+
+    def test_latest_keeps_readable_page_preview_when_pdf_is_browser_locked(self) -> None:
+        documents = SopDocumentService(self.store)
+        output_dir = documents.root / f"route_{self.route_id}"
+        preview_dir = output_dir / CURRENT_PREVIEW_DIR_NAME
+        output_dir.mkdir(parents=True)
+        preview_dir.mkdir(parents=True)
+        docx_path = output_dir / "current.docx"
+        pdf_path = preview_dir / "current.pdf"
+        page_path = preview_dir / "page-001.png"
+        docx_path.write_bytes(b"current-docx")
+        pdf_path.write_bytes(b"locked-preview-pdf")
+        page_path.write_bytes(b"readable-page")
+        manifest = {
+            "route_id": self.route_id,
+            "route_version": 1,
+            "product_code": "CHAT-TEST",
+            "generated_at": "2026-08-21T00:00:00+00:00",
+            "version_token": "locked-pdf",
+            "route_fingerprint": documents._route_fingerprint(self.route_id),
+            "template_id": MULTI_PAGE_TEMPLATE_ID,
+            "layout_mode": "portrait_flow_then_repeated_landscape_work_instructions",
+            "docx_path": str(docx_path),
+            "pdf_path": str(pdf_path),
+            "page_paths": [str(page_path)],
+            "page_count": 1,
+            "expected_page_count": 1,
+            "validation_path": "",
+            "media_count": 0,
+            "status": "draft_document_generated",
+            "preview_source": "generated_docx",
+        }
+        (output_dir / "document_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        original_is_file = Path.is_file
+        with (
+            patch.object(
+                Path,
+                "is_file",
+                autospec=True,
+                side_effect=lambda candidate: False if Path(candidate) == pdf_path else original_is_file(candidate),
+            ),
+            patch.object(documents, "generate") as generate,
+            patch.object(documents, "_render_pdf_pages", side_effect=PermissionError("PDF is locked")) as render_pages,
+        ):
+            result = documents.latest(self.route_id)
+
+        generate.assert_not_called()
+        render_pages.assert_not_called()
+        self.assertEqual(result["version_token"], "locked-pdf")
         self.assertEqual(len(result["page_urls"]), 1)
-        page_path, mime_type, _ = documents.resolve_file(self.route_id, "page", page_no=1)
+
+    def test_resolve_file_regenerates_an_unreadable_published_page(self) -> None:
+        documents = SopDocumentService(self.store)
+        output_dir = documents.root / f"route_{self.route_id}"
+        preview_dir = output_dir / CURRENT_PREVIEW_DIR_NAME
+        fresh_dir = output_dir / f"{VERSIONED_PREVIEW_DIR_PREFIX}fresh"
+        output_dir.mkdir(parents=True)
+        preview_dir.mkdir(parents=True)
+        fresh_dir.mkdir(parents=True)
+        docx_path = output_dir / "current.docx"
+        old_pdf = preview_dir / "old.pdf"
+        old_page = preview_dir / "page-001.png"
+        fresh_pdf = fresh_dir / "fresh.pdf"
+        fresh_page = fresh_dir / "page-001.png"
+        for path in (docx_path, old_pdf, old_page, fresh_pdf, fresh_page):
+            path.write_bytes(path.name.encode("ascii"))
+        manifest = {
+            "route_id": self.route_id,
+            "route_version": 1,
+            "product_code": "CHAT-TEST",
+            "generated_at": "2026-08-21T00:00:00+00:00",
+            "version_token": "old-preview",
+            "route_fingerprint": documents._route_fingerprint(self.route_id),
+            "template_id": MULTI_PAGE_TEMPLATE_ID,
+            "layout_mode": "portrait_flow_then_repeated_landscape_work_instructions",
+            "docx_path": str(docx_path),
+            "pdf_path": str(old_pdf),
+            "page_paths": [str(old_page)],
+            "page_count": 1,
+            "expected_page_count": 1,
+            "validation_path": "",
+            "media_count": 0,
+            "status": "draft_document_generated",
+            "preview_source": "generated_docx",
+        }
+        manifest_path = output_dir / "document_manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        fresh_manifest = manifest | {
+            "version_token": "fresh-preview",
+            "pdf_path": str(fresh_pdf),
+            "page_paths": [str(fresh_page)],
+        }
+
+        def regenerate(_: int) -> dict[str, Any]:
+            manifest_path.write_text(json.dumps(fresh_manifest), encoding="utf-8")
+            return documents.public_manifest(fresh_manifest)
+
+        original_readable = documents._is_readable_file
+        with (
+            patch.object(
+                documents,
+                "_is_readable_file",
+                side_effect=lambda path: False if Path(path) == old_page else original_readable(Path(path)),
+            ),
+            patch.object(documents, "generate", side_effect=regenerate) as generate,
+        ):
+            path, mime_type, filename = documents.resolve_file(self.route_id, "page", page_no=1)
+
+        generate.assert_called_once_with(self.route_id)
+        self.assertEqual(path, fresh_page)
         self.assertEqual(mime_type, "image/png")
-        self.assertTrue(page_path.is_file())
+        self.assertEqual(filename, "page-1.png")
+
+    def test_pdf_page_renderer_supports_chinese_paths(self) -> None:
+        import pymupdf
+
+        fixture_dir = Path(self.temp.name) / "中文预览测试"
+        output_dir = fixture_dir / "分页图片"
+        fixture_dir.mkdir(parents=True)
+        pdf_path = fixture_dir / "作业指导书.pdf"
+        pdf = pymupdf.open()
+        pdf.new_page(width=595, height=842).insert_text((72, 72), "preview page")
+        pdf.save(pdf_path)
+        pdf.close()
+
+        renderer_script = Path(__file__).resolve().parents[1] / "scripts" / "render_pdf_pages.py"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(renderer_script),
+                "--input",
+                str(pdf_path),
+                "--output-directory",
+                str(output_dir),
+                "--dpi",
+                "110",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["page_count"], 1)
+        self.assertEqual(len(payload["page_paths"]), 1)
+        self.assertTrue((output_dir / "page-001.png").is_file())
 
 
 if __name__ == "__main__":

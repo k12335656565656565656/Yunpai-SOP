@@ -351,6 +351,10 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
             payload = json.loads(urllib.request.urlopen(base + f"/api/routes/{route_id}", timeout=5).read())
             self.assertEqual(payload["route"]["product_code"], "TEST-UI")
             self.assertEqual(len(payload["steps"]), 7)
+            health = json.loads(urllib.request.urlopen(base + "/api/health", timeout=5).read())
+            self.assertIn(health["status"], {"ready", "degraded"})
+            self.assertIn("document_preview", health)
+            self.assertIn("database", health["document_preview"])
             self.assertEqual({item["section_type"] for item in payload["sections"]}, set(SECTION_TYPES))
             identity_section = next(item for item in payload["sections"] if item["section_type"] == "product_identity")
             request_body = json.dumps({
@@ -376,6 +380,16 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_builtin_server_rejects_a_second_listener_on_the_same_port(self) -> None:
+        first = create_builtin_server(self.store.path, "127.0.0.1", 0)
+        port = first.server_address[1]
+        try:
+            with self.assertRaises(OSError):
+                second = create_builtin_server(self.store.path, "127.0.0.1", port)
+                second.server_close()
+        finally:
+            first.server_close()
 
     def test_builtin_server_route_editor_endpoints_regenerate_documents(self) -> None:
         route_id = self.add_route("TEST-ROUTE-EDITOR")

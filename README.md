@@ -42,6 +42,12 @@ HDMI 最终模板 ID 为 `yunpai.sop.hdmi-cable.multi-page.v1`。旧的固定两
 
 详细交接规范见 [`docs/handoff/sop_template_ai_handoff/README_AI_HANDOFF.md`](docs/handoff/sop_template_ai_handoff/README_AI_HANDOFF.md)。
 
+## 服务器部署
+
+Linux 服务器必须安装 LibreOffice Writer 和中文字体，使用 Uvicorn 单 worker 启动，
+并通过 `/api/ready` 检查数据库、模板和预览转换组件。完整步骤见
+[`docs/deployment/server-preview-deployment.md`](docs/deployment/server-preview-deployment.md)。
+
 ## 测试
 
 ```powershell

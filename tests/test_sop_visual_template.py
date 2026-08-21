@@ -15,6 +15,8 @@ from openpyxl import load_workbook
 from cad_ai.sop_visual_template import (
     REFERENCE_80806_129_FORMAT,
     SOP_FLOWCHART_SHAPE_POLICY,
+    _build_sop_layout_workbook,
+    _build_sop_word_document,
     build_process_flow_page,
     build_sop_table_templates,
     build_usb_cable_packaging_demo,
@@ -98,6 +100,29 @@ class SopVisualTemplateTests(unittest.TestCase):
         self.assertEqual(page["side_sections"][-1]["title"], "物料表")
         self.assertIn("批准", [item["title"] for item in page["bottom_sections"]])
         self.assertIn("管制文件（印章处）", [item["title"] for item in page["bottom_sections"]])
+
+    def test_word_and_excel_render_technical_and_production_parameter_sections(self) -> None:
+        flow = build_process_flow_page()
+        work = build_work_instruction_page()
+        work["parameter_sections"] = [
+            {"title": "技术参数", "lines": ["规格：USB-C 1.0 m", "公差：±0.5 mm", "材质：PVC"]},
+            {"title": "生产参数", "lines": ["线速：18.5 米/分钟", "模具号：MOLD-USB-08", "模数：4"]},
+        ]
+
+        document = _build_sop_word_document(flow, work)
+        word_text = "\n".join(cell.text for table in document.tables for row in table.rows for cell in row.cells)
+        workbook = _build_sop_layout_workbook(flow, work)
+        excel_text = "\n".join(
+            str(cell.value)
+            for sheet in workbook.worksheets
+            for row in sheet.iter_rows()
+            for cell in row
+            if cell.value is not None
+        )
+
+        for expected in ["技术参数", "生产参数", "USB-C 1.0 m", "18.5 米/分钟", "MOLD-USB-08", "模数：4"]:
+            self.assertIn(expected, word_text)
+            self.assertIn(expected, excel_text)
 
     def test_svg_renderers_emit_valid_reference_shaped_svg(self) -> None:
         flow = build_process_flow_page(operations=["裁线", "自动机前处理", "分线一"])
@@ -244,9 +269,11 @@ class SopVisualTemplateTests(unittest.TestCase):
             self.assertEqual(work_sheet["A1"].value, "产品品名")
             self.assertEqual(work_sheet["AA6"].value, "作业标准")
             self.assertEqual(work_sheet["AA31"].value, "物料表")
-            self.assertEqual(work_sheet["A32"].value, "批准")
-            self.assertEqual(work_sheet["AA32"].value, "管制文件（印章处）")
-            self.assertEqual(work_sheet["AA34"].value, "图号")
+            self.assertEqual(work_sheet["A32"].value, "技术参数")
+            self.assertEqual(work_sheet["A33"].value, "生产参数")
+            self.assertEqual(work_sheet["A34"].value, "批准")
+            self.assertEqual(work_sheet["AA34"].value, "管制文件（印章处）")
+            self.assertEqual(work_sheet["AA36"].value, "图号")
             self.assertIn("图片流程描述及说明", _sheet_values(work_sheet))
             self.assertIn("图片占位", _sheet_values(work_sheet))
             self.assertIn("1", str(work_sheet["C6"].value))
@@ -269,9 +296,11 @@ class SopVisualTemplateTests(unittest.TestCase):
             self.assertIn("扎线装袋", values)
             self.assertIn("备料", values)
             self.assertIn("扎线：使用扎带固定线圈，扎带位置居中。", values)
-            self.assertEqual(work_sheet["A32"].value, "批准")
-            self.assertEqual(work_sheet["A34"].value, None)
-            self.assertEqual(work_sheet["M34"].value, None)
+            self.assertEqual(work_sheet["A32"].value, "技术参数")
+            self.assertEqual(work_sheet["A33"].value, "生产参数")
+            self.assertEqual(work_sheet["A34"].value, "批准")
+            self.assertEqual(work_sheet["A36"].value, None)
+            self.assertEqual(work_sheet["M36"].value, None)
 
     def test_word_template_recreates_sop_with_native_tables_not_excel(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

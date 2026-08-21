@@ -10,4 +10,16 @@ outputs/
 *.log
 *.pem
 *.key
+server-data/
+
+# Local previews, browser profiles and test artifacts. They are reproducible
+# and should never be part of a source checkpoint.
+/latest-check.docx
+/tests/.edge-*/
+/tests/screenshots/
+/playwright-report/
+/test-results/
+
+# Local agent notes and plans are useful on this machine but are not product source.
+/.Codex/
 

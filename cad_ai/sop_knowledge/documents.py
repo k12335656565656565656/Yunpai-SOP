@@ -16,6 +16,8 @@ from typing import Any
 from .store import SopKnowledgeStore
 
 CURRENT_PREVIEW_DIR_NAME = "preview-current"
+VERSIONED_PREVIEW_DIR_PREFIX = "preview-version-"
+PREVIEW_PAGE_DPI = 180
 
 MULTI_PAGE_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v3"
 MULTI_PAGE_LAYOUT_MODE = "portrait_flow_then_repeated_landscape_work_instructions"
@@ -122,24 +124,30 @@ class SopDocumentService:
         if manifest.get("template_id") != MULTI_PAGE_TEMPLATE_ID or manifest.get("layout_mode") != MULTI_PAGE_LAYOUT_MODE:
             return self.generate(route_id)
         preview_path = Path(manifest["pdf_path"])
-        if preview_path.parent.name != CURRENT_PREVIEW_DIR_NAME:
+        if not self._is_published_preview_directory(preview_path.parent):
             return self.generate(route_id)
-        if not self._is_readable_file(Path(manifest["docx_path"])) or not self._is_readable_file(preview_path):
+        if not self._is_readable_file(Path(manifest["docx_path"])):
             return self.generate(route_id)
         if manifest.get("route_fingerprint") != self._route_fingerprint(route_id):
             return self.generate(route_id)
+        page_count = int(manifest.get("page_count") or 0)
         page_paths = [Path(item) for item in manifest.get("page_paths") or []]
-        if len(page_paths) != int(manifest.get("page_count") or 0) or not all(path.is_file() for path in page_paths):
-            page_paths = self._render_pdf_pages(Path(manifest["pdf_path"]), Path(manifest["pdf_path"]).parent)
-            manifest["page_paths"] = [str(path.resolve()) for path in page_paths]
-            manifest["page_count"] = len(page_paths)
-            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        elif not all(self._is_readable_file(path) for path in page_paths):
+        if page_count < 1 or len(page_paths) != page_count:
+            # A published manifest is only written after its PDF and page PNGs
+            # are complete. Do not repair a partial manifest by reopening its
+            # old PDF: Edge can hold that PDF on Windows. A new complete render
+            # is safer than turning a recoverable lock into a workbench outage.
             return self.generate(route_id)
+        # Windows browsers can retain an exclusive read lock on an existing
+        # PDF or individual preview images. The manifest is atomically
+        # published with complete page paths, so normal page loading must not
+        # probe or re-render those live browser assets.
         return self.public_manifest(manifest)
 
     def resolve_file(self, route_id: int, kind: str, *, page_no: int | None = None) -> tuple[Path, str, str]:
-        # Ensure legacy, unreadable artifacts are rebuilt before FileResponse opens them.
+        # Resolve from the published manifest first. A browser may lock a PDF
+        # or PNG after the manifest was written, so repair the artifact once
+        # instead of letting the file endpoint fail the whole preview.
         self.latest(route_id, generate_if_missing=True)
         failure = self._current_preview_failure(route_id)
         if failure:
@@ -155,6 +163,29 @@ class SopDocumentService:
                     return Path(failure["docx_path"]), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", f"SOP_{failure['product_code']}.docx"
                 raise RuntimeError(failure["preview_error"])
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        file_path, mime_type, filename = self._manifest_file(manifest, kind, page_no=page_no)
+        if self._is_readable_file(file_path):
+            return file_path, mime_type, filename
+
+        self.generate(route_id)
+        failure = self._current_preview_failure(route_id)
+        if failure:
+            if kind == "docx":
+                return Path(failure["docx_path"]), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", f"SOP_{failure['product_code']}.docx"
+            raise RuntimeError(failure["preview_error"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        file_path, mime_type, filename = self._manifest_file(manifest, kind, page_no=page_no)
+        if not self._is_readable_file(file_path):
+            raise RuntimeError("DOCX 预览文件暂时无法读取，已尝试生成新副本，请稍后重试。")
+        return file_path, mime_type, filename
+
+    @staticmethod
+    def _manifest_file(
+        manifest: dict[str, Any],
+        kind: str,
+        *,
+        page_no: int | None = None,
+    ) -> tuple[Path, str, str]:
         if kind == "docx":
             return Path(manifest["docx_path"]), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", f"SOP_{manifest['product_code']}.docx"
         if kind == "pdf":
@@ -165,6 +196,63 @@ class SopDocumentService:
                 raise KeyError(page_no)
             return Path(paths[page_no - 1]), "image/png", f"page-{page_no}.png"
         raise ValueError("unsupported document asset")
+
+    def runtime_status(self) -> dict[str, Any]:
+        try:
+            import pymupdf  # noqa: F401
+        except ImportError:
+            pdf_renderer = {"available": False, "backend": "PyMuPDF"}
+        else:
+            pdf_renderer = {"available": True, "backend": "PyMuPDF"}
+
+        if sys.platform.startswith("win"):
+            powershell = self._windows_powershell_executable()
+            office_backend = self._find_windows_office_backend()
+            converter = {
+                "available": bool(powershell and self.preview_script.is_file() and office_backend),
+                "backend": office_backend or "Microsoft Word/LibreOffice",
+            }
+        else:
+            libreoffice = self._find_libreoffice_executable()
+            converter = {
+                "available": libreoffice is not None,
+                "backend": "LibreOffice",
+            }
+
+        try:
+            with self.store.connect() as connection:
+                connection.execute("SELECT 1").fetchone()
+        except Exception as exc:
+            database = {"available": False, "detail": str(exc)}
+        else:
+            database = {"available": True}
+
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".health-", dir=self.root):
+                pass
+        except OSError as exc:
+            storage = {"available": False, "detail": str(exc)}
+        else:
+            storage = {"available": True, "path": str(self.root.resolve())}
+
+        template_generator = {"available": self.template_script.is_file()}
+        ready = all(
+            item["available"]
+            for item in (converter, pdf_renderer, database, storage, template_generator)
+        )
+        return {
+            "status": "ready" if ready else "degraded",
+            "platform": sys.platform,
+            "docx_converter": converter,
+            "pdf_renderer": pdf_renderer,
+            "database": database,
+            "storage": storage,
+            "template_generator": template_generator,
+        }
+
+    @staticmethod
+    def _is_published_preview_directory(path: Path) -> bool:
+        return path.name == CURRENT_PREVIEW_DIR_NAME or path.name.startswith(VERSIONED_PREVIEW_DIR_PREFIX)
 
     @staticmethod
     def _is_readable_file(path: Path) -> bool:
@@ -217,22 +305,86 @@ class SopDocumentService:
         *,
         expected_page_count: int | None = None,
     ) -> dict[str, Any]:
-        if not self.preview_script.is_file():
-            raise FileNotFoundError(f"DOCX preview script is missing: {self.preview_script}")
         output_dir.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".preview-stage-", dir=output_dir.parent) as staging_value:
             staging_dir = Path(staging_value)
             staging_docx = staging_dir / "source.docx"
             staging_output = staging_dir / "rendered"
             shutil.copy2(docx_path, staging_docx)
-            powershell_exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-            if not powershell_exe.is_file():
-                raise RuntimeError(f"DOCX 预览转换不可用：未找到 Windows PowerShell ({powershell_exe})")
+            pdf_path = self._convert_docx_to_pdf(staging_docx, staging_output)
+            page_files = self._render_pdf_pages(pdf_path, staging_output)
+            page_count = len(page_files)
+            if page_count < 1:
+                raise RuntimeError("DOCX 预览转换没有返回有效页数")
+            if expected_page_count is not None and page_count != expected_page_count:
+                raise RuntimeError(f"SOP 页数不符合模板：应为 {expected_page_count} 页，实际为 {page_count} 页")
+            target_pdf = staging_output / f"{docx_path.stem}.pdf"
+            if pdf_path != target_pdf:
+                pdf_path.replace(target_pdf)
+            published_dir = self._publish_preview_directory(staging_output, output_dir)
+        pdf_files = sorted(published_dir.glob("*.pdf"))
+        page_files = sorted(published_dir.glob("page-*.png"))
+        return {
+            "pdf_path": str(pdf_files[0].resolve()),
+            "page_paths": [str(item.resolve()) for item in page_files],
+            "page_count": len(page_files),
+        }
+
+    def _convert_docx_to_pdf(self, docx_path: Path, output_dir: Path) -> Path:
+        if sys.platform.startswith("win"):
+            return self._convert_docx_with_windows(docx_path, output_dir)
+        return self._convert_docx_with_libreoffice(docx_path, output_dir)
+
+    def _convert_docx_with_windows(self, docx_path: Path, output_dir: Path) -> Path:
+        if not self.preview_script.is_file():
+            raise FileNotFoundError(f"DOCX preview script is missing: {self.preview_script}")
+        powershell_exe = self._windows_powershell_executable()
+        if not powershell_exe:
+            raise RuntimeError("DOCX preview is unavailable: Windows PowerShell was not found")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            [
+                str(powershell_exe), "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File",
+                str(self.preview_script), "-InputPath", str(docx_path),
+                "-OutputDirectory", str(output_dir),
+            ],
+            cwd=self.project_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "DOCX was generated, but preview conversion failed: "
+                + (result.stderr.strip() or "Word/LibreOffice conversion is unavailable")
+            )
+        try:
+            json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("DOCX preview conversion did not return a valid result") from exc
+        pdf_files = sorted(output_dir.glob("*.pdf"))
+        if len(pdf_files) != 1:
+            raise RuntimeError("DOCX preview conversion produced an incomplete PDF artifact")
+        return pdf_files[0]
+
+    def _convert_docx_with_libreoffice(self, docx_path: Path, output_dir: Path) -> Path:
+        executable = self._find_libreoffice_executable()
+        if executable is None:
+            raise RuntimeError(
+                "DOCX preview is unavailable: install LibreOffice or set SOP_LIBREOFFICE_PATH"
+            )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".libreoffice-profile-", dir=output_dir.parent) as profile_value:
+            profile_uri = Path(profile_value).resolve().as_uri()
             result = subprocess.run(
                 [
-                    str(powershell_exe), "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File",
-                    str(self.preview_script), "-InputPath", str(staging_docx),
-                    "-OutputDirectory", str(staging_output),
+                    str(executable),
+                    "--headless", "--nologo", "--nodefault", "--nolockcheck",
+                    f"-env:UserInstallation={profile_uri}",
+                    "--convert-to", "pdf:writer_pdf_Export",
+                    "--outdir", str(output_dir), str(docx_path),
                 ],
                 cwd=self.project_root,
                 capture_output=True,
@@ -241,43 +393,59 @@ class SopDocumentService:
                 errors="replace",
                 timeout=120,
             )
-            if result.returncode != 0:
-                raise RuntimeError("DOCX 已生成，但预览转换失败：" + (result.stderr.strip() or "Word/PDF 转换不可用"))
-            try:
-                json.loads(result.stdout)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError("DOCX 预览转换没有返回有效结果") from exc
-            # PowerShell 5.1 can encode Chinese absolute paths with its active
-            # code page. Resolve and validate artifacts from the staging folder.
-            pdf_files = sorted(staging_output.glob("*.pdf"))
-            if len(pdf_files) != 1:
-                raise RuntimeError("DOCX 预览转换产物不完整")
-            page_files = sorted(staging_output.glob("page-*.png"))
-            if not page_files:
-                page_files = self._render_pdf_pages(pdf_files[0], staging_output)
-            page_count = len(page_files)
-            if page_count < 1:
-                raise RuntimeError("DOCX 预览转换没有返回有效页数")
-            if expected_page_count is not None and page_count != expected_page_count:
-                raise RuntimeError(f"SOP 页数不符合模板：应为 {expected_page_count} 页，实际为 {page_count} 页")
-            target_pdf = staging_output / f"{docx_path.stem}.pdf"
-            if pdf_files[0] != target_pdf:
-                pdf_files[0].replace(target_pdf)
-            self._publish_preview_directory(staging_output, output_dir)
-        pdf_files = sorted(output_dir.glob("*.pdf"))
-        page_files = sorted(output_dir.glob("page-*.png"))
-        return {
-            "pdf_path": str(pdf_files[0].resolve()),
-            "page_paths": [str(item.resolve()) for item in page_files],
-            "page_count": len(page_files),
-        }
+        if result.returncode != 0:
+            raise RuntimeError(
+                "DOCX was generated, but LibreOffice preview conversion failed: "
+                + (result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}")
+            )
+        pdf_path = output_dir / f"{docx_path.stem}.pdf"
+        if not pdf_path.is_file():
+            raise RuntimeError(f"LibreOffice did not create the expected PDF: {pdf_path}")
+        return pdf_path
 
     @staticmethod
-    def _publish_preview_directory(candidate: Path, output_dir: Path) -> None:
+    def _windows_powershell_executable() -> Path | None:
+        candidate = (
+            Path(os.environ.get("SystemRoot", r"C:\Windows"))
+            / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        )
+        return candidate if candidate.is_file() else None
+
+    @staticmethod
+    def _find_libreoffice_executable() -> Path | None:
+        configured = os.environ.get("SOP_LIBREOFFICE_PATH")
+        candidates = [
+            Path(configured) if configured else None,
+            Path(found) if (found := shutil.which("soffice")) else None,
+            Path(found) if (found := shutil.which("libreoffice")) else None,
+        ]
+        if sys.platform.startswith("win"):
+            for environment_name in ("ProgramFiles", "ProgramFiles(x86)"):
+                root = os.environ.get(environment_name)
+                if root:
+                    candidates.append(Path(root) / "LibreOffice" / "program" / "soffice.exe")
+        return next((candidate for candidate in candidates if candidate and candidate.is_file()), None)
+
+    def _find_windows_office_backend(self) -> str | None:
+        for environment_name in ("ProgramFiles", "ProgramFiles(x86)"):
+            root = os.environ.get(environment_name)
+            if root and (Path(root) / "Microsoft Office" / "Root" / "Office16" / "WINWORD.EXE").is_file():
+                return "Microsoft Word"
+        return "LibreOffice" if self._find_libreoffice_executable() else None
+
+    @staticmethod
+    def _publish_preview_directory(candidate: Path, output_dir: Path) -> Path:
         backup = output_dir.parent / f".{output_dir.name}-backup-{uuid.uuid4().hex}"
         had_previous = output_dir.exists()
         if had_previous:
-            os.replace(output_dir, backup)
+            try:
+                os.replace(output_dir, backup)
+            except PermissionError:
+                # Browsers can hold a live preview open on Windows. Publish the
+                # replacement beside it so the current preview stays readable.
+                versioned_output = output_dir.parent / f"{VERSIONED_PREVIEW_DIR_PREFIX}{uuid.uuid4().hex}"
+                os.replace(candidate, versioned_output)
+                return versioned_output
         try:
             os.replace(candidate, output_dir)
         except Exception:
@@ -287,6 +455,7 @@ class SopDocumentService:
         finally:
             if backup.exists():
                 shutil.rmtree(backup, ignore_errors=True)
+        return output_dir
 
     def _preview_failure_path(self, route_id: int) -> Path:
         return self.root / f"route_{route_id}" / "preview_failure.json"
@@ -331,7 +500,7 @@ class SopDocumentService:
         document = pymupdf.open(pdf_path)
         try:
             for index, page in enumerate(document, start=1):
-                page.get_pixmap(dpi=120, alpha=False).save(output_dir / f"page-{index:03d}.png")
+                page.get_pixmap(dpi=PREVIEW_PAGE_DPI, alpha=False).save(output_dir / f"page-{index:03d}.png")
         finally:
             document.close()
         return sorted(output_dir.glob("page-*.png"))

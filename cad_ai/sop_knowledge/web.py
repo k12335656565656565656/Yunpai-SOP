@@ -4,15 +4,17 @@ import argparse
 import base64
 import binascii
 import json
+import os
 import re
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, urlparse
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from .models import ReviewFieldPatch, RouteSectionPatch, RouteStepDraft
+from .models import ReviewFieldPatch, RouteSectionPatch, RouteStepDraft, StepIeItemDraft
 from .conversation import SopConversationService
 from .documents import SopDocumentService
 from .nl_assistant import NaturalLanguageSopAssistant
@@ -99,12 +101,43 @@ class StepConfirmRequest(BaseModel):
     comment: str = ""
 
 
+class WorkImageLayoutRequest(BaseModel):
+    slots: int = Field(ge=1, le=6)
+    reviewer: str
+
+
+class StepIeItemsRequest(BaseModel):
+    items: list[StepIeItemDraft] = Field(max_length=6)
+    reviewer: str
+
+
 class ChatRequest(BaseModel):
     message: str
     worker: str
     use_ai: bool = True
     selected_step_id: int | None = None
     pending_message_id: int | None = None
+
+
+class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
+    """Keep the local Windows launcher from sharing a port with stale code."""
+
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def _health_payload(documents: SopDocumentService) -> dict[str, Any]:
+    document_preview = documents.runtime_status()
+    return {
+        "status": document_preview["status"],
+        "document_preview": document_preview,
+        "assistant": NaturalLanguageSopAssistant().status(),
+    }
 
 
 def _regenerate_document_after_route_change(
@@ -241,6 +274,30 @@ def _confirm_step_and_regenerate(
     return _regenerate_document_after_route_change(documents, result)
 
 
+def _update_work_image_layout_and_regenerate(
+    store: SopKnowledgeStore,
+    documents: SopDocumentService,
+    *,
+    step_id: int,
+    slots: int,
+    reviewer: str,
+) -> dict[str, Any]:
+    result = store.set_step_work_image_slots(step_id, slots, reviewer=reviewer)
+    return _regenerate_document_after_route_change(documents, result)
+
+
+def _replace_step_ie_items_and_regenerate(
+    store: SopKnowledgeStore,
+    documents: SopDocumentService,
+    *,
+    step_id: int,
+    items: list[dict[str, Any]],
+    reviewer: str,
+) -> dict[str, Any]:
+    result = store.replace_step_ie_items(step_id, items, reviewer=reviewer)
+    return _regenerate_document_after_route_change(documents, result)
+
+
 def create_review_app(db_path: str | Path):
     try:
         from fastapi import FastAPI, HTTPException
@@ -283,6 +340,17 @@ def create_review_app(db_path: str | Path):
     @app.get("/api/assistant/status")
     def assistant_status() -> dict[str, str]:
         return NaturalLanguageSopAssistant().status()
+
+    @app.get("/api/health")
+    def health() -> dict[str, Any]:
+        return _health_payload(documents)
+
+    @app.get("/api/ready")
+    def ready() -> dict[str, Any]:
+        payload = _health_payload(documents)
+        if payload["status"] != "ready":
+            raise HTTPException(status_code=503, detail=payload)
+        return payload
 
     @app.get("/api/routes/{route_id}/chat/history")
     def chat_history(route_id: int, limit: int = 40) -> list[dict[str, Any]]:
@@ -397,6 +465,26 @@ def create_review_app(db_path: str | Path):
             step_id=step_id,
             reviewer=request.reviewer,
             comment=request.comment,
+        ))
+
+    @app.post("/api/steps/{step_id}/work-image-layout")
+    def update_work_image_layout(step_id: int, request: WorkImageLayoutRequest) -> dict[str, Any]:
+        return guard(lambda: _update_work_image_layout_and_regenerate(
+            store,
+            documents,
+            step_id=step_id,
+            slots=request.slots,
+            reviewer=request.reviewer,
+        ))
+
+    @app.post("/api/steps/{step_id}/ie-items")
+    def replace_step_ie_items(step_id: int, request: StepIeItemsRequest) -> dict[str, Any]:
+        return guard(lambda: _replace_step_ie_items_and_regenerate(
+            store,
+            documents,
+            step_id=step_id,
+            items=[item.model_dump(mode="json") for item in request.items],
+            reviewer=request.reviewer,
         ))
 
     @app.get("/api/knowledge/search")
@@ -588,6 +676,11 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                 self._run(store.list_products)
             elif path == "/api/assistant/status":
                 self._run(lambda: NaturalLanguageSopAssistant().status())
+            elif path == "/api/health":
+                self._run(lambda: _health_payload(documents))
+            elif path == "/api/ready":
+                payload = _health_payload(documents)
+                self._send(200 if payload["status"] == "ready" else 503, payload)
             elif path == "/api/knowledge/search":
                 q = query.get("q", [""])[0]
                 route_id = int(query["route_id"][0]) if query.get("route_id") else None
@@ -772,6 +865,26 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                     comment=body.get("comment", ""),
                 ))
                 return
+            if match := re.fullmatch(r"/api/steps/(\d+)/work-image-layout", self.path):
+                request = WorkImageLayoutRequest.model_validate(body)
+                self._run(lambda: _update_work_image_layout_and_regenerate(
+                    store,
+                    documents,
+                    step_id=int(match.group(1)),
+                    slots=request.slots,
+                    reviewer=request.reviewer,
+                ))
+                return
+            if match := re.fullmatch(r"/api/steps/(\d+)/ie-items", self.path):
+                request = StepIeItemsRequest.model_validate(body)
+                self._run(lambda: _replace_step_ie_items_and_regenerate(
+                    store,
+                    documents,
+                    step_id=int(match.group(1)),
+                    items=[item.model_dump(mode="json") for item in request.items],
+                    reviewer=request.reviewer,
+                ))
+                return
             if match := re.fullmatch(r"/api/routes/(\d+)/steps/reviewable", self.path):
                 route_id = int(match.group(1))
                 request = ReviewableStepRequest.model_validate(body)
@@ -839,7 +952,16 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                     return
             self._send(404, {"detail": "not found"})
 
-    return ThreadingHTTPServer((host, port), ReviewHandler)
+    return ExclusiveThreadingHTTPServer((host, port), ReviewHandler)
+
+
+def create_server_app():
+    """Uvicorn factory for a single-worker Linux/Windows server deployment."""
+
+    db_path = os.environ.get("SOP_DB_PATH")
+    if not db_path:
+        raise RuntimeError("SOP_DB_PATH is required for server deployment")
+    return create_review_app(Path(db_path))
 
 
 def main(argv: list[str] | None = None) -> int:

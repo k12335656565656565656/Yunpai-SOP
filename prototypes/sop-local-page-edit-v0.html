@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>SOP 本页手动编辑交互预览</title>
+  <style>
+    :root{
+      --paper:#ffffff;
+      --canvas:#e9e7e2;
+      --ink:#202124;
+      --muted:#696c70;
+      --line:#d6d3cd;
+      --line-strong:#bfc4cc;
+      --blue:#2459c4;
+      --blue-hover:#1748ae;
+      --blue-soft:#edf3ff;
+      --yellow:#fff3c4;
+      --yellow-line:#d7b45d;
+      --green:#2f7549;
+      --green-soft:#e9f4ed;
+      --red:#a53c32;
+      --surface:#f8f7f4;
+      --shadow:0 12px 32px rgba(30,35,40,.14);
+      --radius:8px;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;min-width:1180px;overflow:hidden}
+    body{margin:0;background:var(--canvas);color:var(--ink);font-family:"Segoe UI","Microsoft YaHei",sans-serif;font-size:14px;letter-spacing:0}
+    button,input,textarea{font:inherit;letter-spacing:0}
+    button{cursor:pointer}
+    button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid rgba(36,89,196,.2);outline-offset:1px}
+    button:disabled{cursor:not-allowed;opacity:.52}
+    .topbar{height:64px;display:flex;align-items:center;gap:14px;padding:0 18px;background:#f9f8f5;border-bottom:1px solid var(--line)}
+    .brand{display:flex;align-items:center;gap:10px;min-width:202px}
+    .wordmark{width:34px;height:34px;border-radius:7px;background:var(--blue);color:white;display:grid;place-items:center;font-family:Georgia,serif;font-weight:800}
+    .brand b{display:block;font-size:15px}.brand small{display:block;margin-top:2px;color:var(--muted);font-size:11px}
+    .prototype-badge{padding:4px 7px;border:1px solid #d0b36b;border-radius:5px;background:#fff8df;color:#745300;font-size:10px;font-weight:700}
+    .product-select{width:254px;height:36px;border:1px solid var(--line);border-radius:7px;background:white;padding:0 10px}
+    .route-state{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
+    .spacer{flex:1}.worker{width:130px;height:36px;border:1px solid var(--line);border-radius:7px;padding:0 10px;background:white}
+    .download,.primary-button,.secondary-button{min-height:36px;border-radius:7px;padding:0 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;font-weight:700}
+    .download,.primary-button{border:1px solid var(--blue);background:var(--blue);color:white}.download:hover,.primary-button:hover{background:var(--blue-hover)}
+    .secondary-button{border:1px solid var(--line-strong);background:white;color:#35404d}.secondary-button:hover{border-color:#8f98a4;background:#f5f6f8}
+
+    .workspace{position:relative;height:calc(100vh - 64px);display:grid;grid-template-columns:minmax(650px,1fr) 420px;gap:1px;background:var(--line);overflow:hidden}
+    .preview{min-width:0;min-height:0;background:#74777c;display:flex;flex-direction:column}
+    .pane-head{height:47px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px;background:#f6f5f2;border-bottom:1px solid var(--line)}
+    .pane-head strong{font-size:13px}.doc-meta{min-width:0;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .page-count{margin-left:auto;color:var(--muted);font-size:11px;white-space:nowrap}
+    .edit-page-button{min-height:34px;border:1px solid var(--blue);border-radius:7px;background:var(--blue);color:white;padding:0 11px;font-size:11px;font-weight:750}
+    .edit-page-button:hover{background:var(--blue-hover)}
+    .doc-stage{position:relative;flex:1;min-height:0;overflow:auto;padding:28px 30px 78px;display:grid;place-items:start center;background:#74777c}
+    .doc-shell{position:relative;width:min(100%,1030px);aspect-ratio:3/2;background:white;box-shadow:0 4px 18px rgba(0,0,0,.34);line-height:0}
+    .doc-image{display:block;width:100%;height:100%;object-fit:contain;background:white;user-select:none}
+    .page-label{position:absolute;left:50%;top:calc(100% + 9px);transform:translateX(-50%);color:white;font-size:11px;line-height:1.2;white-space:nowrap}
+    .hotspot{position:absolute;border:2px solid transparent;border-radius:3px;background:transparent;padding:0;transition:.14s ease;line-height:1.2}
+    .hotspot span{position:absolute;right:4px;top:4px;min-height:25px;display:flex;align-items:center;padding:0 7px;border-radius:5px;background:#835800;color:white;font-size:10px;font-weight:750;opacity:0;transform:translateY(-3px);transition:.14s ease;box-shadow:0 2px 7px rgba(0,0,0,.2);white-space:nowrap}
+    .hotspot:hover,.hotspot.active,.page-editing .hotspot{border-color:#b97600;background:rgba(255,211,68,.24);box-shadow:0 0 0 2px rgba(255,255,255,.8)}
+    .hotspot:hover span,.hotspot.active span,.page-editing .hotspot span{opacity:1;transform:none}
+    .hs-caption-1{left:20.7%;top:30.1%;width:19.3%;height:4.5%}.hs-caption-2{left:40.1%;top:30.1%;width:19.3%;height:4.5%}.hs-caption-3{left:59.5%;top:30.1%;width:19.1%;height:4.5%}
+    .hs-standard{left:78.6%;top:13.8%;width:19.2%;height:8.1%}.hs-equipment{left:78.6%;top:22%;width:19.2%;height:7.8%}.hs-ie{left:1.5%;top:57.7%;width:96.3%;height:14.2%}
+    .live-caption{position:absolute;z-index:2;display:none;align-items:center;padding:0 8px;background:#fff;color:#111;font-family:"SimSun","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.25;border:0;text-align:left;overflow:hidden}
+    .live-caption.visible{display:flex}.live-caption.one{left:20.8%;top:30.2%;width:19.1%;height:4.3%}.live-caption.two{left:40.2%;top:30.2%;width:19.1%;height:4.3%}.live-caption.three{left:59.6%;top:30.2%;width:18.9%;height:4.3%}
+    .dirty-ribbon{position:absolute;z-index:4;left:18px;top:18px;min-height:34px;display:none;align-items:center;gap:7px;padding:0 10px;border:1px solid var(--yellow-line);border-radius:6px;background:#fff9df;color:#6f4d00;font-size:11px;box-shadow:0 5px 15px rgba(0,0,0,.12)}
+    .dirty-ribbon.show{display:flex}.dirty-ribbon i{width:7px;height:7px;border-radius:50%;background:#b77b0a}
+
+    .assistant-pane,.editor{min-width:0;min-height:0;height:100%;background:var(--surface);display:flex;flex-direction:column}
+    .assistant-head,.editor-head{flex:none;padding:14px 16px;background:white;border-bottom:1px solid var(--line)}
+    .assistant-head h1,.editor-head h2{margin:0;font-size:16px}.assistant-head p,.editor-head p{margin:5px 0 0;color:var(--muted);font-size:11px;line-height:1.5;text-wrap:pretty}
+    .assistant-body{flex:1;padding:16px;overflow:auto}.welcome{padding:13px;border:1px solid var(--line);border-radius:8px;background:white}.welcome b{font-size:13px}.welcome p{margin:7px 0 0;color:var(--muted);font-size:11px;line-height:1.65}
+    .method-choice{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:13px 0;border-bottom:1px solid #e5e2dc}.method-choice b{display:block;font-size:12px}.method-choice span{display:block;margin-top:3px;color:var(--muted);font-size:10px}.method-choice button{min-height:32px;border:1px solid #aab9d8;border-radius:6px;background:var(--blue-soft);color:#244d9b;padding:0 9px;font-size:10px;font-weight:700}
+    .chat-composer{margin-top:auto;padding:12px;border-top:1px solid var(--line);background:white}.chat-composer textarea{width:100%;height:86px;resize:none;border:1px solid var(--line-strong);border-radius:7px;padding:10px;line-height:1.55}.chat-actions{display:flex;justify-content:flex-end;margin-top:8px}
+
+    .editor{display:none}.editor.open{display:flex}
+    .editor-head{display:flex;align-items:flex-start;gap:10px}.editor-title{min-width:0;flex:1}.editor-head p{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.close-editor{min-width:52px;height:32px;border:1px solid var(--line-strong);border-radius:6px;background:white;color:#4d5661;font-size:10px}.close-editor:hover{border-color:#8f98a4;background:#f3f3f1}
+    .edit-status{flex:none;display:flex;align-items:center;gap:7px;min-height:39px;padding:0 15px;border-bottom:1px solid #ead9a5;background:#fff8e5;color:#654600;font-size:10px}.edit-status b{font-size:11px}.edit-status .status-dot{width:7px;height:7px;border-radius:50%;background:#b77b0a}
+    .editor-tabs{flex:none;display:flex;padding:8px 12px 0;background:white;border-bottom:1px solid var(--line)}
+    .editor-tab{min-height:38px;border:0;border-bottom:3px solid transparent;background:transparent;padding:0 12px;color:var(--muted);font-size:11px}.editor-tab:hover{color:var(--ink)}.editor-tab.active{border-bottom-color:var(--blue);color:var(--blue);font-weight:750}
+    .editor-scroll{flex:1;min-height:0;overflow:auto;padding:13px 14px 24px;scrollbar-gutter:stable}
+    .editor-intro{margin-bottom:11px;color:var(--muted);font-size:10px;line-height:1.55}
+    .slot-row{display:grid;grid-template-columns:76px minmax(0,1fr);gap:10px;padding:10px 0;border-bottom:1px solid #e6e3dd}.slot-row:first-of-type{padding-top:0}.slot-thumb{position:relative;height:70px;border:1px solid #c5c8cd;border-radius:5px;background-image:url("assets/sop-page-local-edit-reference.png");background-repeat:no-repeat;background-size:510% auto;overflow:hidden}.slot-thumb.one{background-position:27% 22%}.slot-thumb.two{background-position:49% 22%}.slot-thumb.three{background-position:70% 22%}.slot-no{position:absolute;left:4px;top:4px;min-width:20px;height:20px;display:grid;place-items:center;border-radius:4px;background:rgba(25,31,37,.78);color:white;font-size:10px;font-weight:800}
+    .field-label{display:flex;align-items:center;gap:6px;margin-bottom:5px;font-size:11px;font-weight:750}.field-label small{margin-left:auto;color:var(--muted);font-size:9px;font-weight:400}
+    .slot-row textarea,.field textarea,.field input{width:100%;border:1px solid var(--line-strong);border-radius:6px;background:white;padding:8px 9px;outline:0;line-height:1.5}.slot-row textarea{height:70px;resize:none}.slot-row textarea:focus,.field textarea:focus,.field input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(36,89,196,.08)}
+    .field{padding:10px 0;border-bottom:1px solid #e6e3dd}.field textarea{min-height:78px;resize:vertical}.field input{height:39px}.field-hint{display:block;margin-top:5px;color:var(--muted);font-size:9px;line-height:1.45}
+    .ie-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.ie-grid .field{border-bottom:0;padding:0}.locked-note{padding:10px;border:1px solid #bdcadb;border-radius:6px;background:#eef4fb;color:#274b72;font-size:10px;line-height:1.55}
+    .editor-actions{flex:none;padding:11px 14px;border-top:1px solid var(--line);background:white}.change-summary{display:flex;align-items:center;gap:7px;margin-bottom:9px;color:var(--muted);font-size:10px}.change-count{min-width:20px;height:20px;border-radius:10px;background:var(--yellow);color:#795b08;display:grid;place-items:center;font-weight:800}.action-row{display:flex;gap:8px}.save-button{flex:1}.saving .save-button{cursor:wait;opacity:.66}.saving .status-dot{animation:pulse 1s infinite}@keyframes pulse{50%{opacity:.24}}
+
+    .inline-editor{display:none;position:absolute;z-index:20;width:390px;max-height:560px;border:1px solid var(--line);border-radius:8px;background:var(--surface);box-shadow:0 18px 48px rgba(0,0,0,.28);overflow:hidden}
+    body[data-variant="inline"] .editor{display:none!important}body[data-variant="inline"] .assistant-pane{display:flex!important}body[data-variant="inline"] .inline-editor.open{display:flex;flex-direction:column;left:min(53%,calc(100% - 820px));top:87px}
+    .inline-editor .editor-scroll{max-height:340px}.inline-editor .editor-head{padding:12px 13px}.inline-editor .editor-tabs{padding-left:9px}.inline-editor .editor-actions{padding:10px 12px}
+    body[data-variant="focus"] .workspace{grid-template-columns:minmax(680px,1fr) 470px}body[data-variant="focus"] .assistant-pane{display:none}body[data-variant="focus"] .doc-stage{padding:18px 20px 76px}body[data-variant="focus"] .doc-shell{width:min(100%,1160px)}body[data-variant="focus"] .editor{display:flex}body[data-variant="focus"] .close-editor{visibility:hidden}
+    body[data-variant="drawer"] .assistant-pane.hidden-by-editor{display:none}
+
+    .toast{position:fixed;z-index:80;left:20px;bottom:78px;width:380px;border:1px solid #b8c7bd;border-radius:8px;background:white;box-shadow:var(--shadow);opacity:0;transform:translateY(10px);pointer-events:none;transition:.18s ease}.toast.show{opacity:1;transform:none;pointer-events:auto}.toast-main{display:flex;align-items:center;gap:9px;padding:11px}.toast-icon{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:var(--green-soft);color:var(--green);font-weight:900}.toast-copy{min-width:0;flex:1}.toast-copy b{display:block;font-size:11px}.toast-copy span{display:block;margin-top:2px;color:var(--muted);font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.toast button{height:31px;border:1px solid var(--line-strong);border-radius:6px;background:white;color:var(--blue);padding:0 9px;font-size:10px;font-weight:700}.toast-progress{height:3px;background:var(--blue);transform-origin:left}.toast.show .toast-progress{animation:toastTime 8s linear forwards}@keyframes toastTime{to{transform:scaleX(0)}}
+
+    .variant-bar{position:fixed;z-index:100;left:50%;bottom:16px;transform:translateX(-50%);height:48px;display:flex;align-items:center;gap:5px;padding:5px;border:1px solid rgba(32,33,36,.18);border-radius:8px;background:rgba(249,248,245,.97);box-shadow:0 8px 26px rgba(20,25,31,.2)}
+    .variant-label{padding:0 8px;color:var(--muted);font-size:10px;font-weight:700}.variant-button{height:36px;border:0;border-radius:5px;background:transparent;color:#525860;padding:0 11px;font-size:10px;font-weight:700}.variant-button:hover{background:#efefec}.variant-button.active{background:var(--blue);color:white}.lock-toggle{height:36px;margin-left:4px;border:1px solid var(--line-strong);border-radius:5px;background:white;color:#525860;padding:0 10px;font-size:10px;font-weight:700}.lock-toggle.active{border-color:#a86b21;background:#fff6dc;color:#795100}
+    .approved-lock{display:none;padding:10px;border:1px solid #d0b36b;border-radius:6px;background:#fff8df;color:#745300;font-size:10px;line-height:1.55}.route-locked .approved-lock{display:block}.route-locked .editor-content{opacity:.55;pointer-events:none}.route-locked .save-button{display:none}
+    @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  </style>
+</head>
+<body data-variant="drawer">
+  <header class="topbar">
+    <div class="brand"><div class="wordmark">W</div><div><b>SOP DOCX 校样台</b><small>自然语言修改 · 自动出稿</small></div></div>
+    <span class="prototype-badge">交互方案预览</span>
+    <select class="product-select" aria-label="选择产品"><option>123 · HDMI 成品线</option></select>
+    <div class="route-state"><i class="dot"></i><span id="routeState">草稿 · v1 · 7 道工序</span></div>
+    <div class="spacer"></div>
+    <input class="worker" value="现场审核员" aria-label="操作人员">
+    <button class="download" type="button">下载 DOCX</button>
+  </header>
+
+  <main class="workspace" id="workspace">
+    <section class="preview" aria-label="DOCX 实时预览">
+      <div class="pane-head">
+        <strong>DOCX 实时预览</strong>
+        <span class="doc-meta" id="docMeta">123 · v1 · 2026/8/20 10:50</span>
+        <span class="page-count">第 2 / 8 页</span>
+        <button class="edit-page-button" id="editPage" type="button">编辑当前页</button>
+      </div>
+      <div class="doc-stage" id="docStage">
+        <div class="dirty-ribbon show" id="dirtyRibbon"><i></i><span id="dirtyText">正在编辑第 2 页 · 保存后进入待人工核对</span></div>
+        <div class="doc-shell page-editing" id="docShell">
+          <img class="doc-image" src="assets/sop-page-local-edit-reference.png" alt="标准作业指导书第2页">
+          <div class="live-caption one" id="liveCaption1"></div>
+          <div class="live-caption two" id="liveCaption2"></div>
+          <div class="live-caption three" id="liveCaption3"></div>
+          <button class="hotspot hs-caption-1 active" type="button" data-field="caption1" data-tab="steps"><span>修改图片 1 说明</span></button>
+          <button class="hotspot hs-caption-2" type="button" data-field="caption2" data-tab="steps"><span>修改图片 2 说明</span></button>
+          <button class="hotspot hs-caption-3" type="button" data-field="caption3" data-tab="steps"><span>修改图片 3 说明</span></button>
+          <button class="hotspot hs-standard" type="button" data-field="standard" data-tab="side"><span>修改作业标准</span></button>
+          <button class="hotspot hs-equipment" type="button" data-field="equipment" data-tab="side"><span>修改设备/工具</span></button>
+          <button class="hotspot hs-ie" type="button" data-field="ie-cycle" data-tab="ie"><span>修改 IE 工时</span></button>
+          <span class="page-label">第 2 / 8 页 · NL-001 前处理</span>
+        </div>
+      </div>
+    </section>
+
+    <aside class="assistant-pane hidden-by-editor" id="assistantPane">
+      <div class="assistant-head"><h1>修改这份 SOP</h1><p>可以直接告诉 AI，也可以在左侧预览中点击需要修改的位置。</p></div>
+      <div class="assistant-body">
+        <div class="welcome"><b>选择更顺手的修改方式</b><p>手动编辑适合改一两个明确的文字；对话修改适合一次调整多项内容。</p></div>
+        <div class="method-choice"><div><b>手动修改当前页</b><span>看到哪里不对，就在预览中点哪里</span></div><button type="button" data-open-editor>开始修改</button></div>
+        <div class="method-choice"><div><b>通过自然语言修改</b><span>例如：把图片2说明改成“剥皮后检查尺寸”</span></div><button type="button" id="focusChat">输入要求</button></div>
+      </div>
+      <div class="chat-composer"><textarea id="chatInput" placeholder="告诉 AI 哪一道工序、哪个位置需要修改……"></textarea><div class="chat-actions"><button class="primary-button" type="button">发送并更新 DOCX</button></div></div>
+    </aside>
+
+    <aside class="editor open" id="drawerEditor" aria-label="本页内容编辑"></aside>
+    <section class="inline-editor" id="inlineEditor" aria-label="本页内容快捷编辑"></section>
+  </main>
+
+  <div class="toast" id="toast" role="status">
+    <div class="toast-main"><div class="toast-icon">✓</div><div class="toast-copy"><b>第 2 页已更新</b><span>DOCX 已重新生成，本工序现在是待人工核对</span></div><button id="undo" type="button">撤销</button></div>
+    <div class="toast-progress"></div>
+  </div>
+
+  <nav class="variant-bar" aria-label="切换交互方案">
+    <span class="variant-label">比较方案</span>
+    <button class="variant-button active" type="button" data-variant="drawer">A · 右侧编辑</button>
+    <button class="variant-button" type="button" data-variant="inline">B · 就地小窗</button>
+    <button class="variant-button" type="button" data-variant="focus">C · 专注模式</button>
+    <button class="lock-toggle" id="lockToggle" type="button">模拟批准锁定</button>
+  </nav>
+
+  <template id="editorTemplate">
+    <div class="editor-head">
+      <div class="editor-title"><h2>编辑当前页内容</h2><p>第 2 页 · NL-001 前处理 · 当前 3 格</p></div>
+      <button class="close-editor" type="button" data-close-editor>关闭</button>
+    </div>
+    <div class="edit-status"><i class="status-dot"></i><b>保存后：</b><span>标记待人工核对，并重新生成 DOCX</span></div>
+    <div class="editor-tabs" role="tablist">
+      <button class="editor-tab active" type="button" data-tab-button="steps">图片和说明</button>
+      <button class="editor-tab" type="button" data-tab-button="side">右侧资料</button>
+      <button class="editor-tab" type="button" data-tab-button="ie">IE 工时</button>
+    </div>
+    <div class="editor-scroll">
+      <div class="approved-lock">这条路线已经批准，不能直接覆盖。请先创建新修订版，再修改本页内容。</div>
+      <div class="editor-content" data-tab-panel="steps">
+        <div class="editor-intro">说明文字与上方图片一一对应。点击左侧预览中的文字，也会自动定位到这里。</div>
+        <div class="slot-row" data-editor-field="caption1"><div class="slot-thumb one"><span class="slot-no">1</span></div><label><span class="field-label">图片 1 说明<small>作业步骤 1</small></span><textarea data-input="caption1">按工单长度裁切</textarea></label></div>
+        <div class="slot-row" data-editor-field="caption2"><div class="slot-thumb two"><span class="slot-no">2</span></div><label><span class="field-label">图片 2 说明<small>作业步骤 2</small></span><textarea data-input="caption2">剥皮尺寸</textarea></label></div>
+        <div class="slot-row" data-editor-field="caption3"><div class="slot-thumb three"><span class="slot-no">3</span></div><label><span class="field-label">图片 3 说明<small>作业步骤 3</small></span><textarea data-input="caption3" placeholder="尚未填写说明"></textarea></label></div>
+      </div>
+      <div class="editor-content" data-tab-panel="side" hidden>
+        <div class="editor-intro">这里对应指导书右侧的六项资料，使用工人容易理解的名称。</div>
+        <label class="field" data-editor-field="standard"><span class="field-label">作业标准</span><textarea data-input="standard">检查方法待质量责任人确认。\n验收标准待质量责任人确认。</textarea></label>
+        <label class="field" data-editor-field="equipment"><span class="field-label">设备 / 工具</span><textarea data-input="equipment">设备、工具及治具型号待工程确认。</textarea></label>
+        <label class="field"><span class="field-label">辅助材料</span><textarea>材料以受控 BOM 为准。</textarea></label>
+        <label class="field"><span class="field-label">注意事项</span><textarea>风险未确认前不得转本工序用于生产。</textarea></label>
+      </div>
+      <div class="editor-content" data-tab-panel="ie" hidden>
+        <div class="editor-intro">只填写现场已经确认的工时数据；空白内容不会由系统自动编造。</div>
+        <div class="ie-grid">
+          <label class="field" data-editor-field="ie-cycle"><span class="field-label">标准工时（秒）</span><input data-input="ie-cycle" value="" placeholder="例如：45"></label>
+          <label class="field"><span class="field-label">作业人数</span><input value="" placeholder="例如：1"></label>
+          <label class="field"><span class="field-label">设备速度</span><input value="" placeholder="现场确认后填写"></label>
+          <label class="field"><span class="field-label">模具编号</span><input value="" placeholder="现场确认后填写"></label>
+        </div>
+        <span class="field-hint">未填写的参数继续保持空白，并作为待确认内容保留。</span>
+        <div class="locked-note" style="margin-top:14px">批准、审核、制作签名栏保持锁定，不在本页编辑器中开放。</div>
+      </div>
+    </div>
+    <div class="editor-actions">
+      <div class="change-summary"><span class="change-count" data-change-count>0</span><span data-change-text>尚未修改内容</span></div>
+      <div class="action-row"><button class="secondary-button" type="button" data-reset>恢复原内容</button><button class="primary-button save-button" type="button" data-save>保存草稿并更新 DOCX</button></div>
+    </div>
+  </template>
+
+  <script>
+    const body=document.body;
+    const workspace=document.getElementById('workspace');
+    const assistantPane=document.getElementById('assistantPane');
+    const drawer=document.getElementById('drawerEditor');
+    const inline=document.getElementById('inlineEditor');
+    const template=document.getElementById('editorTemplate');
+    const docShell=document.getElementById('docShell');
+    const dirtyRibbon=document.getElementById('dirtyRibbon');
+    const dirtyText=document.getElementById('dirtyText');
+    const routeState=document.getElementById('routeState');
+    const toast=document.getElementById('toast');
+    const initial={caption1:'按工单长度裁切',caption2:'剥皮尺寸',caption3:'',standard:'检查方法待质量责任人确认。\n验收标准待质量责任人确认。',equipment:'设备、工具及治具型号待工程确认。','ie-cycle':''};
+    let saved={...initial};
+    let previousSaved={...initial};
+    let selectedField='caption1';
+    let currentTab='steps';
+    let editorOpen=true;
+    let toastTimer=null;
+
+    function mountEditor(host){host.innerHTML='';host.appendChild(template.content.cloneNode(true));bindEditor(host)}
+    function activeHost(){return body.dataset.variant==='inline'?inline:drawer}
+    function editorInputs(host=activeHost()){return [...host.querySelectorAll('[data-input]')]}
+    function values(host=activeHost()){
+      const result={};editorInputs(host).forEach(input=>result[input.dataset.input]=input.value.trim());return result;
+    }
+    function dirtyCount(host=activeHost()){
+      return Object.entries(values(host)).filter(([key,value])=>value!==(saved[key]??'')).length;
+    }
+    function syncChangeState(host=activeHost()){
+      const count=dirtyCount(host),badge=host.querySelector('[data-change-count]'),text=host.querySelector('[data-change-text]');
+      if(badge)badge.textContent=String(count);if(text)text.textContent=count?`已修改 ${count} 处，尚未保存`:'尚未修改内容';
+      dirtyText.textContent=count?`第 2 页有 ${count} 处尚未保存`:'正在编辑第 2 页 · 保存后进入待人工核对';
+    }
+    function applyValues(host,data){editorInputs(host).forEach(input=>{if(Object.hasOwn(data,input.dataset.input))input.value=data[input.dataset.input]});syncChangeState(host)}
+    function bindEditor(host){
+      host.querySelectorAll('[data-tab-button]').forEach(button=>button.addEventListener('click',()=>selectTab(button.dataset.tabButton,host)));
+      host.querySelectorAll('[data-input]').forEach(input=>input.addEventListener('input',()=>syncChangeState(host)));
+      host.querySelector('[data-close-editor]').addEventListener('click',closeEditor);
+      host.querySelector('[data-reset]').addEventListener('click',()=>applyValues(host,saved));
+      host.querySelector('[data-save]').addEventListener('click',()=>saveEditor(host));
+      applyValues(host,saved);
+    }
+    function selectTab(tab,host=activeHost()){
+      currentTab=tab;
+      host.querySelectorAll('[data-tab-button]').forEach(button=>button.classList.toggle('active',button.dataset.tabButton===tab));
+      host.querySelectorAll('[data-tab-panel]').forEach(panel=>panel.hidden=panel.dataset.tabPanel!==tab);
+    }
+    function focusField(field,tab){
+      selectedField=field;currentTab=tab||currentTab;openEditor();
+      const host=activeHost();selectTab(currentTab,host);
+      document.querySelectorAll('.hotspot').forEach(item=>item.classList.toggle('active',item.dataset.field===field));
+      host.querySelectorAll('[data-editor-field]').forEach(item=>item.style.background=item.dataset.editorField===field?'var(--blue-soft)':'');
+      const input=host.querySelector(`[data-input="${field}"]`);if(input){input.focus({preventScroll:true});input.select()}
+    }
+    function openEditor(){
+      editorOpen=true;docShell.classList.add('page-editing');dirtyRibbon.classList.add('show');
+      if(body.dataset.variant==='inline'){inline.classList.add('open')}else{drawer.classList.add('open');assistantPane.classList.add('hidden-by-editor')}
+    }
+    function closeEditor(){
+      editorOpen=false;drawer.classList.remove('open');inline.classList.remove('open');assistantPane.classList.remove('hidden-by-editor');docShell.classList.remove('page-editing');dirtyRibbon.classList.remove('show');document.querySelectorAll('.hotspot').forEach(item=>item.classList.remove('active'));
+    }
+    function saveEditor(host){
+      if(workspace.classList.contains('route-locked'))return;
+      const button=host.querySelector('[data-save]'),next=values(host),count=dirtyCount(host);if(!count){showToast('没有实际修改','DOCX 不会重复生成');return}
+      host.classList.add('saving');button.disabled=true;button.textContent='正在重新生成 DOCX';routeState.textContent='正在生成最新 DOCX';dirtyText.textContent='正在保存并重新生成第 2 页预览';
+      window.setTimeout(()=>{
+        previousSaved={...saved};saved={...saved,...next};host.classList.remove('saving');button.disabled=false;button.textContent='保存草稿并更新 DOCX';routeState.textContent='草稿 · v1 · 7 道工序';
+        ['caption1','caption2','caption3'].forEach((key,index)=>{const node=document.getElementById(`liveCaption${index+1}`);node.textContent=`${index+1}. ${saved[key]}`;node.classList.toggle('visible',saved[key]!==initial[key])});
+        document.getElementById('docMeta').textContent='123 · v1 · 刚刚更新 · 待人工核对';dirtyText.textContent='DOCX 已更新 · 当前工序待人工核对';syncChangeState(host);showToast('第 2 页已更新','DOCX 已重新生成，本工序现在是待人工核对',true);
+      },900)
+    }
+    function showToast(title,text,allowUndo=false){
+      toast.querySelector('b').textContent=title;toast.querySelector('.toast-copy span').textContent=text;document.getElementById('undo').hidden=!allowUndo;toast.classList.remove('show');void toast.offsetWidth;toast.classList.add('show');clearTimeout(toastTimer);toastTimer=window.setTimeout(()=>toast.classList.remove('show'),8000)
+    }
+    function undo(){
+      saved={...previousSaved};applyValues(drawer,saved);applyValues(inline,saved);['caption1','caption2','caption3'].forEach((key,index)=>{const node=document.getElementById(`liveCaption${index+1}`);node.textContent=`${index+1}. ${saved[key]}`;node.classList.toggle('visible',saved[key]!==initial[key])});document.getElementById('docMeta').textContent='123 · v1 · 已撤销刚才修改';dirtyText.textContent='刚才的修改已撤销';showToast('已撤销','第 2 页已恢复到修改前内容')
+    }
+    function setVariant(variant){
+      body.dataset.variant=variant;document.querySelectorAll('[data-variant]').forEach(button=>button.classList.toggle('active',button.dataset.variant===variant));history.replaceState(null,'',`?variant=${variant}`);
+      drawer.classList.remove('open');inline.classList.remove('open');assistantPane.classList.remove('hidden-by-editor');
+      if(variant==='focus'){editorOpen=true;drawer.classList.add('open')}else if(editorOpen&&variant==='inline'){inline.classList.add('open')}else if(editorOpen){drawer.classList.add('open');assistantPane.classList.add('hidden-by-editor')}
+      selectTab(currentTab,activeHost());applyValues(activeHost(),saved);
+    }
+    mountEditor(drawer);mountEditor(inline);selectTab('steps',drawer);selectTab('steps',inline);
+    document.querySelectorAll('.hotspot').forEach(button=>button.addEventListener('click',()=>focusField(button.dataset.field,button.dataset.tab)));
+    document.getElementById('editPage').addEventListener('click',()=>focusField('caption1','steps'));
+    document.querySelectorAll('[data-open-editor]').forEach(button=>button.addEventListener('click',()=>focusField('caption1','steps')));
+    document.getElementById('focusChat').addEventListener('click',()=>document.getElementById('chatInput').focus());
+    document.querySelectorAll('.variant-button').forEach(button=>button.addEventListener('click',()=>setVariant(button.dataset.variant)));
+    document.getElementById('undo').addEventListener('click',undo);
+    document.getElementById('lockToggle').addEventListener('click',event=>{const locked=workspace.classList.toggle('route-locked');event.currentTarget.classList.toggle('active',locked);event.currentTarget.textContent=locked?'已模拟批准锁定':'模拟批准锁定';routeState.textContent=locked?'已批准 · 只读':'草稿 · v1 · 7 道工序'});
+    const requested=new URLSearchParams(location.search).get('variant');setVariant(['drawer','inline','focus'].includes(requested)?requested:'drawer');
+  </script>
+</body>
+</html>

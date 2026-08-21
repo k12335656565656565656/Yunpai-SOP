@@ -1,0 +1,11 @@
+# Keep source files consistent between Windows and deployment hosts.
+* text=auto eol=lf
+
+# Do not attempt text merges or line-ending normalization for binary assets.
+*.docx binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary

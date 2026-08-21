@@ -1,0 +1,11 @@
+.git
+.github
+.Codex
+.venv
+__pycache__
+*.pyc
+outputs
+server-data
+tests
+prototypes
+latest-check.docx

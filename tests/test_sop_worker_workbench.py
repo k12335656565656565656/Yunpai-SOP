@@ -15,6 +15,7 @@ from cad_ai.sop_knowledge.store import SopKnowledgeStore
 from cad_ai.sop_knowledge.web import (
     _confirm_media_and_regenerate,
     _regenerate_document_after_route_change,
+    _replace_step_ie_items_and_regenerate,
     _save_media_layout_and_regenerate,
 )
 from tests.test_sop_knowledge_workflow import make_identity, make_route
@@ -323,8 +324,35 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertEqual(route["media"], [])
         self.assertFalse(storage_path.exists())
 
+    def test_uploaded_media_paths_survive_database_migration(self) -> None:
+        asset = self.store.upload_media_asset(
+            self.route_id,
+            original_name="迁移图片.png",
+            mime_type="image/png",
+            data=PNG_1X1,
+            uploaded_by="worker-migration",
+        )
+        resolved_path = Path(asset["storage_path"])
+        self.assertTrue(resolved_path.is_file())
+
+        with self.store.connect() as connection:
+            stored_path = connection.execute(
+                "SELECT storage_path FROM media_asset WHERE id=?", (asset["id"],)
+            ).fetchone()[0]
+            self.assertEqual(stored_path, f"sop_media/{resolved_path.name}")
+            connection.execute(
+                "UPDATE media_asset SET storage_path=? WHERE id=?",
+                (rf"D:\old-server\sop_media\{resolved_path.name}", asset["id"]),
+            )
+
+        migrated = self.store.get_media_asset(asset["id"])
+
+        self.assertEqual(Path(migrated["storage_path"]), resolved_path.resolve())
+        self.assertTrue(Path(migrated["storage_path"]).is_file())
+
     def test_route_editor_adds_and_reorders_reviewable_steps(self) -> None:
         original = self.store.get_route(self.route_id)["steps"]
+        self.assertTrue(all(step["work_image_slots"] == 3 for step in original))
         result = self.store.add_reviewable_step(
             self.route_id,
             title="剥皮与芯线整理",
@@ -339,6 +367,7 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         )
         added = next(step for step in added_route["steps"] if step["id"] == result["step_id"])
         self.assertEqual(added["review_state"], "needs_revision")
+        self.assertEqual(added["work_image_slots"], 3)
         self.assertTrue(added["unknowns_json"][0]["blocking"])
         self.assertEqual(result["page_number"], 3)
 
@@ -353,6 +382,142 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertEqual(final[0]["id"], ordered_ids[-1])
         self.assertEqual([step["sequence_no"] for step in final], [1.0, 2.0, 3.0, 4.0])
         self.assertTrue(all(step["review_state"] == "needs_revision" for step in final))
+
+    def test_work_image_layout_defaults_to_three_and_protects_confirmed_media(self) -> None:
+        step = self.store.get_route(self.route_id)["steps"][0]
+        self.assertEqual(step["work_image_slots"], 3)
+
+        changed = self.store.set_step_work_image_slots(step["id"], 2, reviewer="layout-reviewer")
+        self.assertTrue(changed["changed"])
+        self.assertEqual(changed["work_image_slots"], 2)
+        self.assertEqual(self.store.get_route(self.route_id)["steps"][0]["review_state"], "needs_revision")
+
+        for index in range(2):
+            asset = self.store.upload_media_asset(
+                self.route_id,
+                original_name=f"confirmed-{index}.png",
+                mime_type="image/png",
+                data=PNG_1X1 + bytes([index]),
+                uploaded_by="layout-reviewer",
+            )
+            link_id = self.store.link_media_asset(step["id"], asset["id"], caption=f"已确认图片 {index + 1}")
+            self.store.confirm_media_link(link_id, reviewer="layout-reviewer")
+
+        with self.assertRaisesRegex(ValueError, "2 张已确认图片"):
+            self.store.set_step_work_image_slots(step["id"], 1, reviewer="layout-reviewer")
+
+    def test_step_ie_items_support_add_edit_delete_and_stable_ids(self) -> None:
+        step = self.store.get_route(self.route_id)["steps"][0]
+        created = self.store.replace_step_ie_items(
+            step["id"],
+            [
+                {
+                    "action": "裁切",
+                    "machine_type": "裁线机",
+                    "equipment_speed": "每分钟 20 米",
+                    "unit_price": "",
+                    "headcount": "1",
+                    "standard_time": "45 秒",
+                    "allowance_rate": "10%",
+                    "standard_capacity": "80 条/小时",
+                    "time_source": "现场实测",
+                    "note": "首件后复测",
+                },
+                {"action": "剥皮", "machine_type": "剥皮机"},
+            ],
+            reviewer="ie-reviewer",
+        )
+
+        self.assertTrue(created["changed"])
+        route = self.store.get_route(self.route_id)
+        items = route["steps"][0]["ie_items"]
+        self.assertEqual([item["action"] for item in items], ["裁切", "剥皮"])
+        first_id, second_id = [item["id"] for item in items]
+        self.assertEqual(route["steps"][0]["review_state"], "needs_revision")
+
+        edited = self.store.replace_step_ie_items(
+            step["id"],
+            [
+                {
+                    **items[1],
+                    "action": "剥皮与检查",
+                    "standard_time": "30 秒",
+                }
+            ],
+            reviewer="ie-reviewer",
+        )
+
+        self.assertTrue(edited["changed"])
+        remaining = self.store.get_route(self.route_id)["steps"][0]["ie_items"]
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["id"], second_id)
+        self.assertEqual(remaining[0]["action"], "剥皮与检查")
+        self.assertNotEqual(remaining[0]["id"], first_id)
+
+    def test_step_ie_items_reject_invalid_or_unsafe_writes(self) -> None:
+        steps = self.store.get_route(self.route_id)["steps"]
+        existing = self.store.replace_step_ie_items(
+            steps[0]["id"], [{"action": "裁切"}], reviewer="ie-reviewer"
+        )["ie_items"][0]
+
+        with self.assertRaisesRegex(ValueError, "动作名称"):
+            self.store.replace_step_ie_items(
+                steps[0]["id"], [{"action": "  "}], reviewer="ie-reviewer"
+            )
+        with self.assertRaisesRegex(ValueError, "最多 6"):
+            self.store.replace_step_ie_items(
+                steps[0]["id"], [{"action": f"动作 {index}"} for index in range(7)],
+                reviewer="ie-reviewer",
+            )
+        with self.assertRaisesRegex(ValueError, "不属于当前工序"):
+            self.store.replace_step_ie_items(
+                steps[1]["id"], [{**existing, "action": "跨工序修改"}], reviewer="ie-reviewer"
+            )
+
+        with self.store.connect() as connection:
+            connection.execute("UPDATE product_route SET status='approved' WHERE id=?", (self.route_id,))
+        with self.assertRaisesRegex(Exception, "approved route is immutable"):
+            self.store.replace_step_ie_items(
+                steps[0]["id"], [{**existing, "action": "不可修改"}], reviewer="ie-reviewer"
+            )
+
+    def test_step_ie_items_regenerate_document_only_after_actual_change(self) -> None:
+        step = self.store.get_route(self.route_id)["steps"][0]
+        documents = Mock()
+        documents.generate.return_value = {
+            "route_id": self.route_id,
+            "version_token": "ie-version-token",
+            "page_count": 4,
+            "preview_status": "ready",
+        }
+        documents.latest.return_value = {
+            "route_id": self.route_id,
+            "version_token": "ie-version-token",
+            "page_count": 4,
+            "preview_status": "ready",
+        }
+
+        changed = _replace_step_ie_items_and_regenerate(
+            self.store,
+            documents,
+            step_id=step["id"],
+            items=[{"action": "新增项目", "note": "人工填写"}],
+            reviewer="ie-reviewer",
+        )
+        self.assertTrue(changed["changed"])
+        documents.generate.assert_called_once_with(self.route_id)
+
+        documents.generate.reset_mock()
+        unchanged = _replace_step_ie_items_and_regenerate(
+            self.store,
+            documents,
+            step_id=step["id"],
+            items=changed["ie_items"],
+            reviewer="ie-reviewer",
+        )
+        self.assertFalse(unchanged["changed"])
+        documents.generate.assert_not_called()
+        documents.latest.assert_called_once_with(self.route_id)
 
     def test_route_editor_splits_actions_without_pages_or_into_independent_steps(self) -> None:
         step = self.store.get_route(self.route_id)["steps"][1]
@@ -587,6 +752,14 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertIn("locate-change", simple_html)
         self.assertIn('id="returnPreview"', simple_html)
         self.assertIn("changePageNumber", simple_html)
+        self.assertIn("route-layout-button", simple_html)
+        self.assertIn("openWorkImageLayout", simple_html)
+        self.assertIn("/work-image-layout", simple_html)
+        self.assertIn("3 张并排（默认）", simple_html)
+        self.assertIn("IE 项目", simple_html)
+        self.assertIn("openStepIeItems", simple_html)
+        self.assertIn("/ie-items", simple_html)
+        self.assertIn("新增 IE 项目", simple_html)
         self.assertIn("page_number", simple_html)
         self.assertIn("field_key", simple_html)
         self.assertIn("scrollPreviewTo", simple_html)
@@ -595,8 +768,17 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertIn(".chat[hidden]{display:none}", simple_html)
         self.assertIn('id="retryPreview"', simple_html)
         self.assertIn("retryDocumentPreview", simple_html)
+        self.assertIn("showPagePreviewError", simple_html)
+        self.assertIn("系统不会自动打开 PDF", simple_html)
+        self.assertIn("page-image-error", simple_html)
+        self.assertIn("image.addEventListener('error'", simple_html)
         self.assertIn("documentInfo?.preview_status==='failed'", simple_html)
         self.assertIn("预览暂时不可用", simple_html)
+        self.assertIn('id="pageViewer"', simple_html)
+        self.assertIn("data-page-fullscreen", simple_html)
+        self.assertIn("openPageViewer", simple_html)
+        self.assertIn("setPageViewerZoom", simple_html)
+        self.assertIn("pageViewerFit", simple_html)
         self.assertIn("openAddRouteStep", simple_html)
         self.assertIn("openSplitRouteStep", simple_html)
         self.assertIn("openMergeRouteStep", simple_html)

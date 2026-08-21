@@ -7,7 +7,9 @@ import unittest
 import zipfile
 from pathlib import Path
 
+import pymupdf
 from docx import Document
+from docx.enum.table import WD_ROW_HEIGHT_RULE
 
 from scripts.generate_sop_template_ai_handoff import (
     CENTER_FLOWCHART_NAME,
@@ -25,6 +27,7 @@ from scripts.generate_sop_template_ai_handoff import (
 )
 from cad_ai.sop_knowledge.store import SopKnowledgeStore
 from cad_ai.sop_knowledge.models import RouteSectionDraft
+from cad_ai.sop_knowledge.documents import SopDocumentService
 from tests.test_sop_knowledge_workflow import make_identity, make_route
 
 
@@ -119,6 +122,39 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             document = Document(result["document_docx"])
             self.assertEqual(len(document.sections), 2)
             self.assertEqual(len(document.tables), 16)
+            first_instruction_body = document.tables[5]
+            first_instruction_ie = document.tables[6]
+            first_instruction_footer = document.tables[7]
+            self.assertTrue(
+                all(row.height_rule == WD_ROW_HEIGHT_RULE.AT_LEAST for row in first_instruction_body.rows)
+            )
+            self.assertTrue(
+                all(row.height_rule == WD_ROW_HEIGHT_RULE.AT_LEAST for row in first_instruction_ie.rows)
+            )
+            self.assertTrue(
+                all(row.height_rule == WD_ROW_HEIGHT_RULE.AT_LEAST for row in first_instruction_footer.rows)
+            )
+            side_font_sizes = [
+                run.font.size.pt
+                for row_index in range(6)
+                for paragraph in first_instruction_body.cell(row_index, 7).paragraphs
+                for run in paragraph.runs
+                if run.font.size is not None
+            ]
+            ie_font_sizes = [
+                run.font.size.pt
+                for row in first_instruction_ie.rows
+                for cell in row.cells
+                for paragraph in cell.paragraphs
+                for run in paragraph.runs
+                if run.font.size is not None
+            ]
+            self.assertGreaterEqual(min(side_font_sizes), 7.5)
+            self.assertGreaterEqual(min(ie_font_sizes), 7.5)
+            self.assertEqual([step["work_image_slots"] for step in store.get_route(route_id)["steps"]], [3, 3, 3])
+            self.assertEqual(len(first_instruction_ie.rows), 5)
+            self.assertIn("技术参数", first_instruction_body.cell(6, 0).text)
+            self.assertIn("生产参数", first_instruction_body.cell(7, 0).text)
             flow_ie_time = document.tables[2]
             self.assertIn("单价", flow_ie_time.cell(1, 3).text)
             self.assertIn("人数", flow_ie_time.cell(1, 4).text)
@@ -137,8 +173,148 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
                     ["", "", ""],
                 )
             second_instruction_body = document.tables[9]
-            self.assertIn("记录要求（最新）", second_instruction_body.cell(4, 4).text)
-            self.assertIn("登记工单号和异常现象", second_instruction_body.cell(4, 4).text)
+            self.assertIn("记录要求（最新）", second_instruction_body.cell(4, 7).text)
+            self.assertIn("登记工单号和异常现象", second_instruction_body.cell(4, 7).text)
+
+    def test_route_backed_hdmi_supports_every_work_image_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SopKnowledgeStore(root / "knowledge.sqlite3")
+            store.initialize()
+            store.ensure_process_family("test_family", "测试工艺族")
+            identity = make_identity("HDMI-LAYOUT-TEST")
+            store.upsert_product(identity, {"class": "cable"})
+            route_id = store.create_route(make_route(identity, 6))
+            steps = store.get_route(route_id)["steps"]
+            store.update_step_field(
+                steps[0]["id"],
+                "method",
+                ["准备物料", "核对方向", "执行作业", "记录结果"],
+                reviewer="layout-tester",
+            )
+            for field_name, value in {
+                "quality_check": ["本工序检查方法尚未由人工提供。"],
+                "acceptance_criteria": ["本工序合格判据尚未由责任人依据受控规范提供。"],
+                "tool_equipment": ["设备、工具及治具型号待工程确认。"],
+                "safety": ["信息不完整或结果异常时停止流转并提交人工判定。"],
+                "record_output": ["本工序记录要求尚未由人工提供。"],
+                "inputs": ["本工序输入资料待责任人确认。"],
+            }.items():
+                store.update_step_field(
+                    steps[-1]["id"], field_name, value, reviewer="layout-tester"
+                )
+            for slot_count, step in enumerate(steps, start=1):
+                store.set_step_work_image_slots(step["id"], slot_count, reviewer="layout-tester")
+
+            result = generate_route_package(
+                root / "package",
+                document_date="2026-08-18",
+                db_path=store.path,
+                route_id=route_id,
+            )
+
+            document = Document(result["document_docx"])
+            expected_positions = {
+                1: [(0, 1, "1")],
+                2: [(0, 1, "1"), (0, 4, "2")],
+                3: [(0, 1, "1"), (0, 3, "2"), (0, 5, "3")],
+                4: [(0, 1, "1"), (0, 4, "2"), (3, 4, "3"), (3, 1, "4")],
+                5: [(0, 1, "1"), (0, 3, "2"), (0, 5, "3"), (3, 4, "4"), (3, 1, "5")],
+                6: [(0, 1, "1"), (0, 3, "2"), (0, 5, "3"), (3, 5, "4"), (3, 3, "5"), (3, 1, "6")],
+            }
+            for page_index, slot_count in enumerate(range(1, 7)):
+                body = document.tables[5 + page_index * 4]
+                ie_table = document.tables[6 + page_index * 4]
+                for row, column, prefix in expected_positions[slot_count]:
+                    self.assertTrue(body.cell(row, column).text.strip().startswith(prefix))
+                self.assertEqual(len(ie_table.rows), 2 + slot_count)
+                self.assertIn("技术参数", body.cell(6, 0).text)
+                self.assertIn("生产参数", body.cell(7, 0).text)
+
+            first_body_text = "\n".join(
+                cell.text for row in document.tables[5].rows for cell in row.cells
+            )
+            for method in ("准备物料", "核对方向", "执行作业", "记录结果"):
+                self.assertIn(method, first_body_text)
+
+            manifest = json.loads((root / "package" / MANIFEST_NAME).read_text(encoding="utf-8"))
+            self.assertEqual(
+                [item["work_image_slots"] for item in manifest["layout"]["instruction_layouts"]],
+                [1, 2, 3, 4, 5, 6],
+            )
+            validation = json.loads((root / "package" / VALIDATION_NAME).read_text(encoding="utf-8"))
+            self.assertTrue(validation["checks"]["ie_action_rows_match_work_image_slots"])
+            self.assertTrue(validation["checks"]["visual_step_order_every_page"])
+
+            documents = SopDocumentService(store)
+            if documents._find_libreoffice_executable() is not None:
+                preview_dir = root / "libreoffice-preview"
+                pdf_path = documents._convert_docx_with_libreoffice(
+                    Path(result["document_docx"]), preview_dir
+                )
+                page_paths = documents._render_pdf_pages(pdf_path, preview_dir)
+                with pymupdf.open(pdf_path) as pdf:
+                    page_summaries = [
+                        " | ".join(page.get_text().splitlines()[:8])
+                        for page in pdf
+                    ]
+                self.assertEqual(
+                    len(page_paths),
+                    result["expected_page_count"],
+                    page_summaries,
+                )
+
+    def test_route_backed_hdmi_writes_manual_step_ie_items_without_inventing_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SopKnowledgeStore(root / "knowledge.sqlite3")
+            store.initialize()
+            store.ensure_process_family("test_family", "测试工艺族")
+            identity = make_identity("HDMI-IE-ITEM-TEST")
+            store.upsert_product(identity, {"class": "cable"})
+            route_id = store.create_route(make_route(identity, 2))
+            step = store.get_route(route_id)["steps"][0]
+            store.replace_step_ie_items(
+                step["id"],
+                [
+                    {
+                        "action": "剥皮",
+                        "machine_type": "人工填写的剥皮机",
+                        "equipment_speed": "每分钟 12 米",
+                        "headcount": "1",
+                        "standard_time": "30 秒",
+                        "allowance_rate": "8%",
+                        "standard_capacity": "100 条/小时",
+                        "time_source": "现场实测记录 IE-2026-08",
+                        "note": "单价尚未提供",
+                    },
+                    {"action": "检查"},
+                ],
+                reviewer="ie-reviewer",
+            )
+
+            result = generate_route_package(
+                root / "package",
+                document_date="2026-08-21",
+                db_path=store.path,
+                route_id=route_id,
+            )
+            document = Document(result["document_docx"])
+            ie_table = document.tables[6]
+            headers = [ie_table.cell(1, index).text.strip() for index in range(10)]
+            first_row = [ie_table.cell(2, index).text.strip() for index in range(10)]
+            second_row = [ie_table.cell(3, index).text.strip() for index in range(10)]
+
+            self.assertEqual(
+                headers,
+                ["动作", "机器类型", "设备速度", "单价", "人数", "标准工时", "宽放率", "标准产能", "工时来源", "备注"],
+            )
+            self.assertEqual(first_row[0], "剥皮")
+            self.assertEqual(first_row[1], "人工填写的剥皮机")
+            self.assertEqual(first_row[2], "每分钟 12 米")
+            self.assertEqual(first_row[3], "")
+            self.assertEqual(first_row[7], "100 条/小时")
+            self.assertEqual(second_row, ["检查", "", "", "", "", "", "", "", "", ""])
 
     def test_route_backed_hdmi_embeds_only_confirmed_step_media(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

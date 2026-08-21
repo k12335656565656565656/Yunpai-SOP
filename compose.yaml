@@ -1,0 +1,11 @@
+services:
+  yunpai-sop:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      SOP_DB_PATH: /data/sop_knowledge.sqlite3
+      SOP_LIBREOFFICE_PATH: /usr/bin/libreoffice
+    volumes:
+      - ./server-data:/data

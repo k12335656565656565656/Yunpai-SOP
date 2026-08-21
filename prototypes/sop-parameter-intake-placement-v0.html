@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SOP 参数接入位置原型</title>
+  <style>
+    :root {
+      --paper: #f3f4f2;
+      --surface: #ffffff;
+      --surface-soft: #f7f8f6;
+      --ink: #1f2522;
+      --muted: #68716c;
+      --line: #d8dcd8;
+      --line-strong: #b8c0ba;
+      --blue: #1d5fc4;
+      --blue-dark: #174c9b;
+      --blue-soft: #eaf1fb;
+      --green: #28714a;
+      --green-soft: #e8f3ec;
+      --amber: #8b5b00;
+      --amber-soft: #fff2cf;
+      --red: #9b3434;
+      --shadow: 0 12px 34px rgba(31, 37, 34, 0.10);
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 1120px; background: var(--paper); }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 14px/1.55 "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+    }
+    button, input, textarea, select { font: inherit; letter-spacing: 0; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+      outline: 3px solid rgba(29, 95, 196, 0.22);
+      outline-offset: 2px;
+    }
+
+    .topbar {
+      height: 64px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding: 0 24px;
+      background: rgba(255, 255, 255, 0.97);
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 210px; }
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 5px;
+      background: var(--blue);
+      color: white;
+      font-weight: 800;
+    }
+    .brand b { display: block; font-size: 15px; }
+    .brand small { display: block; color: var(--muted); font-size: 11px; }
+    .crumb { color: var(--muted); font-size: 13px; }
+    .crumb strong { color: var(--ink); }
+    .top-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .ai-state { display: flex; align-items: center; gap: 7px; color: var(--green); font-size: 12px; }
+    .ai-state i { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+
+    .btn {
+      min-height: 38px;
+      padding: 8px 14px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: white;
+      color: var(--ink);
+      font-weight: 700;
+      transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+    }
+    .btn:hover { border-color: var(--line-strong); background: var(--surface-soft); }
+    .btn:active { transform: translateY(1px); }
+    .btn.primary { border-color: var(--blue); background: var(--blue); color: white; }
+    .btn.primary:hover { border-color: var(--blue-dark); background: var(--blue-dark); }
+    .btn.ghost { border-color: transparent; background: transparent; color: var(--blue); }
+    .btn.small { min-height: 32px; padding: 5px 10px; font-size: 12px; }
+    .icon-btn {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: white;
+      color: var(--ink);
+      font-size: 18px;
+    }
+
+    .prototype-note {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 34px;
+      padding: 6px 24px;
+      background: #28302c;
+      color: #eef1ef;
+      font-size: 12px;
+    }
+    .prototype-note b { margin-right: 8px; }
+
+    .page { max-width: 1280px; margin: 0 auto; padding: 22px 24px 104px; }
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+    .page-head h1 { margin: 0; font-size: 24px; line-height: 1.3; }
+    .page-head p { margin: 5px 0 0; color: var(--muted); }
+    .draft-state { padding: 6px 9px; background: var(--amber-soft); color: var(--amber); font-size: 12px; font-weight: 700; }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      margin: 22px 0 18px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .step {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 58px;
+      padding: 10px 16px;
+      border-right: 1px solid var(--line);
+      color: var(--muted);
+    }
+    .step:last-child { border-right: 0; }
+    .step-no {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      flex: none;
+      border: 1px solid var(--line-strong);
+      border-radius: 50%;
+      background: white;
+      font: 700 12px/1 Consolas, monospace;
+    }
+    .step b { display: block; color: var(--ink); font-size: 13px; }
+    .step small { display: block; font-size: 11px; }
+    .step.done .step-no { border-color: var(--green); background: var(--green-soft); color: var(--green); }
+    .step.active { background: var(--blue-soft); color: var(--blue); }
+    .step.active .step-no { border-color: var(--blue); background: var(--blue); color: white; }
+
+    .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 16px; align-items: start; }
+    .main-flow { min-width: 0; }
+    .section {
+      margin-bottom: 14px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 54px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .section-head h2 { margin: 0; font-size: 15px; }
+    .section-head p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+    .section-body { padding: 16px; }
+    .basic-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    .field label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; font-size: 12px; font-weight: 700; }
+    .field input, .field textarea, .field select {
+      width: 100%;
+      min-height: 40px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: white;
+      color: var(--ink);
+    }
+    .field input:hover, .field textarea:hover { border-color: var(--line-strong); }
+    .field input.pending { border-color: #d6b66a; background: #fffcf3; }
+    .source {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: var(--green-soft);
+      color: var(--green);
+      font-size: 10px;
+      font-weight: 400;
+    }
+    .source.pending { background: var(--amber-soft); color: var(--amber); }
+    .drop-zone {
+      min-height: 186px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 190px;
+      border: 1px dashed #9ea9a2;
+      background: var(--surface-soft);
+    }
+    .drop-zone textarea {
+      min-height: 184px;
+      padding: 16px;
+      resize: none;
+      border: 0;
+      border-right: 1px solid var(--line);
+      border-radius: 0;
+      background: transparent;
+      font-size: 14px;
+      line-height: 1.75;
+    }
+    .drop-zone textarea:focus-visible { outline-offset: -3px; }
+    .upload-side { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; text-align: center; }
+    .upload-symbol { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; background: white; font-size: 24px; color: var(--blue); }
+    .upload-side b { margin-top: 9px; font-size: 13px; }
+    .upload-side span { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .source-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+    .source-actions small { color: var(--muted); }
+
+    .parameter-panel {
+      margin-bottom: 14px;
+      border: 1px solid #a9bfdc;
+      background: white;
+      box-shadow: 0 5px 18px rgba(29, 95, 196, 0.08);
+    }
+    .parameter-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 62px;
+      padding: 10px 14px;
+      border-bottom: 1px solid #ccdaec;
+      background: var(--blue-soft);
+    }
+    .parameter-mark { width: 34px; height: 34px; display: grid; place-items: center; flex: none; border-radius: 50%; background: var(--blue); color: white; font-weight: 800; }
+    .parameter-title { min-width: 0; flex: 1; }
+    .parameter-title b { display: block; font-size: 15px; }
+    .parameter-title span { display: block; color: #506986; font-size: 11px; }
+    .parameter-count { padding: 5px 8px; background: white; color: var(--green); font-size: 11px; font-weight: 700; }
+    .parameter-content { padding: 14px; }
+    .parameter-panel.collapsed .parameter-content { display: none; }
+    .parameter-panel.collapsed .chevron { transform: rotate(-90deg); }
+    .parameter-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .parameter-group { min-width: 0; }
+    .group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+    .group-head h3 { margin: 0; font-size: 13px; }
+    .group-head span { color: var(--muted); font-size: 10px; }
+    .param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+    .param-grid .wide { grid-column: 1 / -1; }
+    .unit-input { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+    .unit-input input { border-radius: 4px 0 0 4px; }
+    .unit-input span { display: flex; align-items: center; padding: 0 9px; border: 1px solid var(--line); border-left: 0; border-radius: 0 4px 4px 0; background: var(--surface-soft); color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .parameter-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .pending-note { display: flex; align-items: center; gap: 7px; color: var(--amber); font-size: 11px; }
+    .pending-note i { width: 7px; height: 7px; border-radius: 50%; background: #c48a17; }
+    .add-param { border: 0; background: transparent; color: var(--blue); font-size: 12px; font-weight: 700; }
+    .drawer-create { display: none; }
+
+    .summary {
+      position: sticky;
+      top: 16px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .summary-head { padding: 14px; border-bottom: 1px solid var(--line); }
+    .summary-head h2 { margin: 0; font-size: 15px; }
+    .summary-body { padding: 14px; }
+    .summary-row { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 8px; padding: 8px 0; border-bottom: 1px solid #eceeec; }
+    .summary-row:last-child { border-bottom: 0; }
+    .summary-row span { color: var(--muted); font-size: 11px; }
+    .summary-row b { overflow-wrap: anywhere; font-size: 12px; }
+    .summary-status { display: flex; align-items: center; gap: 7px; margin-top: 12px; padding: 9px 10px; background: var(--amber-soft); color: var(--amber); font-size: 11px; }
+    .summary-status i { width: 7px; height: 7px; border-radius: 50%; background: #c48a17; }
+    .create-actions { padding: 14px; border-top: 1px solid var(--line); }
+    .create-actions .btn { width: 100%; min-height: 44px; }
+    .create-actions small { display: block; margin-top: 7px; color: var(--muted); text-align: center; }
+
+    .standalone-slot { display: none; }
+    body[data-variant="step"] .intake-section { display: none; }
+    body[data-variant="step"] .standalone-slot { display: block; }
+    body[data-variant="step"] .step:nth-child(2) { background: white; color: var(--muted); }
+    body[data-variant="step"] .step:nth-child(3) { background: var(--blue-soft); color: var(--blue); }
+    body[data-variant="step"] .step:nth-child(3) .step-no { border-color: var(--blue); background: var(--blue); color: white; }
+    body[data-variant="step"] .parameter-panel { min-height: 420px; }
+
+    .drawer-shell { display: none; }
+    body[data-variant="drawer"] .workspace { grid-template-columns: minmax(0, 1fr) 340px; }
+    body[data-variant="drawer"] .summary { display: none; }
+    body[data-variant="drawer"] .drawer-shell { display: block; position: sticky; top: 16px; }
+    body[data-variant="drawer"] .drawer-shell .parameter-panel { box-shadow: var(--shadow); }
+    body[data-variant="drawer"] .drawer-shell .parameter-groups { grid-template-columns: 1fr; }
+    body[data-variant="drawer"] .drawer-shell .param-grid { grid-template-columns: 1fr; }
+    body[data-variant="drawer"] .drawer-shell .param-grid .wide { grid-column: auto; }
+    body[data-variant="drawer"] .drawer-shell .parameter-footer { align-items: flex-start; flex-direction: column; }
+    body[data-variant="drawer"] .drawer-shell .drawer-create { display: block; width: 100%; min-height: 42px; }
+
+    .result-banner {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+      padding: 12px 14px;
+      border: 1px solid #b8d5c2;
+      background: var(--green-soft);
+      color: var(--green);
+    }
+    .result-banner.show { display: flex; }
+    .result-banner b { display: block; }
+    .result-banner span { display: block; font-size: 11px; }
+
+    .variant-switcher {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      z-index: 50;
+      width: min(760px, calc(100vw - 40px));
+      display: grid;
+      grid-template-columns: 132px repeat(3, 1fr);
+      gap: 6px;
+      padding: 7px;
+      border: 1px solid #c7ccc8;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.97);
+      box-shadow: 0 14px 36px rgba(31, 37, 34, 0.17);
+      backdrop-filter: blur(10px);
+    }
+    .variant-label { display: flex; align-items: center; padding: 0 10px; color: var(--muted); font-size: 11px; font-weight: 700; }
+    .variant-btn {
+      min-height: 42px;
+      padding: 6px 9px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted);
+      text-align: left;
+    }
+    .variant-btn b { display: block; color: var(--ink); font-size: 12px; }
+    .variant-btn span { display: block; font-size: 10px; }
+    .variant-btn:hover { background: var(--surface-soft); }
+    .variant-btn.active { border-color: #a9bfdc; background: var(--blue-soft); color: var(--blue); }
+
+    .toast {
+      position: fixed;
+      right: 20px;
+      top: 78px;
+      z-index: 80;
+      display: none;
+      max-width: 360px;
+      padding: 11px 14px;
+      border-radius: 5px;
+      background: #28302c;
+      color: white;
+      box-shadow: var(--shadow);
+    }
+    .toast.show { display: block; }
+    .loading-text { display: none; }
+    .is-loading .normal-text { display: none; }
+    .is-loading .loading-text { display: inline; }
+  </style>
+</head>
+<body data-variant="inline">
+  <div class="prototype-note"><b>交互原型</b>示例内容仅用于确认参数输入位置，不代表真实生产数据</div>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">W</div>
+      <div><b>SOP 智能助手</b><small>对话整理 · 自动出稿</small></div>
+    </div>
+    <div class="crumb">项目管理 / <strong>新建项目</strong></div>
+    <div class="top-actions">
+      <div class="ai-state"><i></i>AI 模型已连接</div>
+      <button class="btn small" type="button">保存草稿</button>
+      <button class="icon-btn" type="button" aria-label="关闭" title="关闭">&times;</button>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="page-head">
+      <div><h1>新建 SOP 项目</h1><p>把现有资料交给 AI 整理，确认后生成第一版 SOP 草稿。</p></div>
+      <span class="draft-state">尚未创建</span>
+    </div>
+
+    <nav class="steps" aria-label="新建项目进度">
+      <div class="step done"><span class="step-no">1</span><div><b>基本资料</b><small>产品和文件信息</small></div></div>
+      <div class="step active"><span class="step-no">2</span><div><b>交给 AI 整理</b><small>文字、图片和工艺资料</small></div></div>
+      <div class="step"><span class="step-no">3</span><div><b>核对参数</b><small>只改错误或缺失项</small></div></div>
+      <div class="step"><span class="step-no">4</span><div><b>生成草稿</b><small>创建路线和 DOCX</small></div></div>
+    </nav>
+
+    <div id="resultBanner" class="result-banner">
+      <div class="parameter-mark">&#10003;</div>
+      <div><b>SOP 草稿已创建，参数已同步到文档</b><span>模具号仍为“待确认”，不会由 AI 自动补写。</span></div>
+    </div>
+
+    <div class="workspace">
+      <div class="main-flow">
+        <section class="section">
+          <div class="section-head"><div><h2>基本资料</h2><p>这些信息会进入 SOP 页眉和项目列表。</p></div><span class="source">已填写</span></div>
+          <div class="section-body basic-grid">
+            <div class="field"><label for="productName">产品名称</label><input id="productName" value="HDMI 2.1 成品线"></div>
+            <div class="field"><label for="partNo">产品料号</label><input id="partNo" value="HDMI-DEMO-002M"></div>
+            <div class="field"><label for="documentNo">文件编号</label><input id="documentNo" value="创建后自动生成"></div>
+          </div>
+        </section>
+
+        <section class="section intake-section">
+          <div class="section-head"><div><h2>把现有资料放在这里</h2><p>可以是一整段说明，也可以同时加入现场工序图片。</p></div><span class="source">AI 自动整理</span></div>
+          <div class="section-body">
+            <div class="drop-zone">
+              <textarea id="sourceText" aria-label="项目资料">产品是 HDMI 2.1 成品线，规格 HDMI 2.1 / 2 m。线速 18.5 米/分钟，模数 4。材质 PVC，公差为总长 ±20 mm。模具号稍后由现场补充。工序按上传图片顺序整理。</textarea>
+              <div class="upload-side"><div class="upload-symbol">+</div><b>加入工序图片</b><span>PNG / JPEG，可多选</span><button class="btn small" type="button" style="margin-top:10px">选择图片</button></div>
+            </div>
+            <div class="source-actions">
+              <small>已识别：产品信息、3 项技术参数、2 项生产参数</small>
+              <button id="parseBtn" class="btn primary" type="button"><span class="normal-text">让 AI 重新整理</span><span class="loading-text">正在整理...</span></button>
+            </div>
+          </div>
+        </section>
+
+        <div id="standaloneSlot" class="standalone-slot"></div>
+        <div id="inlineSlot"></div>
+      </div>
+
+      <aside id="summaryPane" class="summary">
+        <div class="summary-head"><h2>创建内容</h2></div>
+        <div class="summary-body">
+          <div class="summary-row"><span>产品</span><b>HDMI 2.1 成品线</b></div>
+          <div class="summary-row"><span>资料</span><b>文字说明 1 份</b></div>
+          <div class="summary-row"><span>工序图片</span><b>尚未加入</b></div>
+          <div class="summary-row"><span>技术参数</span><b>3 项已识别</b></div>
+          <div class="summary-row"><span>生产参数</span><b>2 项已识别，1 项待确认</b></div>
+          <div class="summary-status"><i></i>缺失参数会保留“待确认”，仍可生成草稿</div>
+        </div>
+        <div class="create-actions"><button id="createBtn" class="btn primary" type="button">创建并生成 SOP</button><small>生成后进入对话修改和 DOCX 预览</small></div>
+      </aside>
+
+      <aside id="drawerSlot" class="drawer-shell"></aside>
+    </div>
+  </main>
+
+  <section id="parameterPanel" class="parameter-panel" aria-labelledby="parameterTitle">
+    <div class="parameter-head">
+      <div class="parameter-mark">3</div>
+      <div class="parameter-title"><b id="parameterTitle">核对 SOP 参数</b><span>AI 已从上方资料带出内容，只需要处理错误和待确认项。</span></div>
+      <span class="parameter-count">5 项已识别</span>
+      <button id="collapseBtn" class="icon-btn chevron" type="button" aria-label="收起或展开参数" title="收起或展开">&#9662;</button>
+    </div>
+    <div class="parameter-content">
+      <div class="parameter-groups">
+        <section class="parameter-group">
+          <div class="group-head"><h3>技术参数</h3><span>进入“技术参数”章节</span></div>
+          <div class="param-grid">
+            <div class="field wide"><label for="specification">规格 <span class="source">从资料识别</span></label><input id="specification" value="HDMI 2.1 / 2 m"></div>
+            <div class="field"><label for="tolerance">公差 <span class="source">从资料识别</span></label><input id="tolerance" value="总长 ±20 mm"></div>
+            <div class="field"><label for="material">材质 <span class="source">从资料识别</span></label><input id="material" value="PVC"></div>
+          </div>
+          <button id="addParamBtn" class="add-param" type="button">+ 添加其他技术参数</button>
+        </section>
+        <section class="parameter-group">
+          <div class="group-head"><h3>生产参数</h3><span>进入“生产参数”章节</span></div>
+          <div class="param-grid">
+            <div class="field"><label for="speed">线速 <span class="source">从资料识别</span></label><div class="unit-input"><input id="speed" inputmode="decimal" value="18.5"><span>米/分钟</span></div></div>
+            <div class="field"><label for="cavity">模数 <span class="source">从资料识别</span></label><input id="cavity" inputmode="numeric" value="4"></div>
+            <div class="field wide"><label for="moldId">模具号 <span class="source pending">待确认</span></label><input id="moldId" class="pending" placeholder="待确认，可稍后由现场补充"></div>
+          </div>
+        </section>
+      </div>
+      <div id="extraParamRow" class="parameter-footer">
+        <div class="pending-note"><i></i>模具号没有可靠来源，AI 不会猜写。</div>
+        <button class="btn small" type="button">确认以上参数</button>
+        <button class="btn primary drawer-create" data-create type="button">创建并生成 SOP</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="variant-switcher" aria-label="原型位置方案">
+    <div class="variant-label">参数放在哪里</div>
+    <button class="variant-btn active" data-variant="inline" type="button"><b>A · 就地核对</b><span>资料之后，生成之前</span></button>
+    <button class="variant-btn" data-variant="step" type="button"><b>B · 单独一步</b><span>参数成为第 3 步</span></button>
+    <button class="variant-btn" data-variant="drawer" type="button"><b>C · 右侧面板</b><span>资料与参数同时看</span></button>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const body = document.body;
+    const panel = document.getElementById("parameterPanel");
+    const inlineSlot = document.getElementById("inlineSlot");
+    const standaloneSlot = document.getElementById("standaloneSlot");
+    const drawerSlot = document.getElementById("drawerSlot");
+    const toast = document.getElementById("toast");
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add("show");
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => toast.classList.remove("show"), 2600);
+    }
+
+    function setVariant(name) {
+      body.dataset.variant = name;
+      document.querySelectorAll("[data-variant]").forEach(button => {
+        if (button.classList.contains("variant-btn")) button.classList.toggle("active", button.dataset.variant === name);
+      });
+      if (name === "inline") inlineSlot.appendChild(panel);
+      if (name === "step") standaloneSlot.appendChild(panel);
+      if (name === "drawer") drawerSlot.appendChild(panel);
+      panel.classList.remove("collapsed");
+      const url = new URL(window.location.href);
+      url.searchParams.set("variant", name);
+      window.history.replaceState({}, "", url);
+    }
+
+    document.querySelectorAll(".variant-btn").forEach(button => {
+      button.addEventListener("click", () => setVariant(button.dataset.variant));
+    });
+
+    document.getElementById("collapseBtn").addEventListener("click", () => {
+      panel.classList.toggle("collapsed");
+    });
+
+    document.getElementById("parseBtn").addEventListener("click", event => {
+      event.currentTarget.classList.add("is-loading");
+      event.currentTarget.disabled = true;
+      window.setTimeout(() => {
+        event.currentTarget.classList.remove("is-loading");
+        event.currentTarget.disabled = false;
+        panel.classList.remove("collapsed");
+        showToast("AI 已重新整理，参数仍需人工核对。");
+      }, 850);
+    });
+
+    document.getElementById("addParamBtn").addEventListener("click", event => {
+      const group = event.currentTarget.closest(".parameter-group");
+      const grid = group.querySelector(".param-grid");
+      if (grid.querySelector("[data-extra]")) return showToast("已添加一个自定义参数输入。");
+      const field = document.createElement("div");
+      field.className = "field wide";
+      field.dataset.extra = "true";
+      field.innerHTML = '<label>其他参数 <span class="source pending">人工填写</span></label><input placeholder="例如：颜色、硬度或受控图纸参数">';
+      grid.appendChild(field);
+      showToast("已添加自定义技术参数。");
+    });
+
+    function createDraft() {
+      document.getElementById("resultBanner").classList.add("show");
+      showToast("已创建演示草稿，模具号保持待确认。");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    document.getElementById("createBtn").addEventListener("click", createDraft);
+    document.querySelectorAll("[data-create]").forEach(button => button.addEventListener("click", createDraft));
+
+    const requested = new URL(window.location.href).searchParams.get("variant");
+    setVariant(["inline", "step", "drawer"].includes(requested) ? requested : "inline");
+  </script>
+</body>
+</html>

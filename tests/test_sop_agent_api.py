@@ -1,17 +1,97 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from docx import Document
+from pydantic import ValidationError
 
 from cad_ai.sop_agent import SOP_GENERATION_SEQUENCE, SopGenerateRequest, SopRoutingStep, generate_sop_package
-from cad_ai.sop_agent import _ollama_native_chat_payload, _ollama_native_chat_url
+from cad_ai.sop_agent import _build_model_prompt, _build_structured_sop_data, _ollama_native_chat_payload, _ollama_native_chat_url
 from cad_ai.sop_api import create_sop_fastapi_app
 
 
 class SopAgentApiTests(unittest.TestCase):
+    def test_sop_parameter_schema_rejects_nonpositive_production_values(self) -> None:
+        with self.assertRaises(ValidationError):
+            SopGenerateRequest(product_name="测试产品", part_no="TEST-001", document_no="SOP-001", speed_m_per_min=0)
+        with self.assertRaises(ValidationError):
+            SopRoutingStep(name="成型", cavity_count=-1)
+
+    def test_human_parameters_are_grounded_in_json_prompt_and_word(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            request = _sample_request(Path(directory)).model_copy(
+                update={
+                    "speed_m_per_min": 18.5,
+                    "mold_id": "MOLD-USB-08",
+                    "cavity_count": 4,
+                    "tech_params": {"规格": "USB-C 1.0 m", "公差": "±0.5 mm", "材质": "PVC"},
+                }
+            )
+            request.routing_steps[0] = request.routing_steps[0].model_copy(
+                update={"speed_m_per_min": 12.0, "tech_params": {"材质": "阻燃 PVC"}}
+            )
+
+            response = generate_sop_package(request)
+            parsed = json.loads(response.artifacts.parsed_sop_json.read_text(encoding="utf-8"))
+
+            self.assertEqual(parsed["production_parameters"]["speed_m_per_min"], 18.5)
+            self.assertEqual(parsed["production_parameters"]["mold_id"], "MOLD-USB-08")
+            self.assertEqual(parsed["production_parameters"]["cavity_count"], 4)
+            self.assertEqual(parsed["technical_parameters"]["values"]["材质"], "PVC")
+            self.assertEqual(parsed["step_parameters"][0]["production_parameters"]["speed_m_per_min"], 12.0)
+            self.assertEqual(parsed["step_parameters"][0]["production_parameters"]["mold_id"], "MOLD-USB-08")
+            self.assertEqual(parsed["step_parameters"][0]["technical_parameters"]["values"]["材质"], "阻燃 PVC")
+
+            prompt = _build_model_prompt(request)
+            self.assertIn("18.5 米/分钟", prompt)
+            self.assertIn("MOLD-USB-08", prompt)
+            self.assertIn("不得推测、补写或改写", prompt)
+
+            document_text = _document_table_text(Document(response.artifacts.document_docx))
+            for expected in ["技术参数", "生产参数", "USB-C 1.0 m", "±0.5 mm", "PVC", "18.5 米/分钟", "MOLD-USB-08", "4"]:
+                self.assertIn(expected, document_text)
+
+    def test_missing_parameters_remain_pending_in_json_and_word(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            response = generate_sop_package(_sample_request(Path(directory)))
+            parsed = json.loads(response.artifacts.parsed_sop_json.read_text(encoding="utf-8"))
+
+            self.assertEqual(parsed["technical_parameters"]["status"], "needs_confirmation")
+            self.assertEqual(parsed["production_parameters"]["status"], "needs_confirmation")
+            self.assertIsNone(parsed["production_parameters"]["speed_m_per_min"])
+            self.assertIsNone(parsed["production_parameters"]["mold_id"])
+            self.assertIsNone(parsed["production_parameters"]["cavity_count"])
+
+            document_text = _document_table_text(Document(response.artifacts.document_docx))
+            self.assertIn("技术参数", document_text)
+            self.assertIn("生产参数", document_text)
+            self.assertGreaterEqual(document_text.count("待确认"), 3)
+
+    def test_model_cannot_inject_ungrounded_sop_parameters(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            request = _sample_request(Path(directory)).model_copy(update={"use_model": True})
+            fabricated = _build_structured_sop_data(request) | {
+                "technical_parameters": {"values": {"材质": "AI虚构材料"}},
+                "production_parameters": {
+                    "speed_m_per_min": 999,
+                    "mold_id": "AI-MOLD",
+                    "cavity_count": 99,
+                },
+            }
+
+            with patch("cad_ai.sop_agent._generate_content_with_model", return_value=(fabricated, {})):
+                response = generate_sop_package(request)
+
+            parsed = json.loads(response.artifacts.parsed_sop_json.read_text(encoding="utf-8"))
+            self.assertNotIn("AI虚构材料", json.dumps(parsed, ensure_ascii=False))
+            self.assertIsNone(parsed["production_parameters"]["speed_m_per_min"])
+            self.assertIsNone(parsed["production_parameters"]["mold_id"])
+            self.assertIsNone(parsed["production_parameters"]["cavity_count"])
+
     def test_ollama_native_payload_disables_thinking_for_qwen35b_json(self) -> None:
         url = _ollama_native_chat_url("http://127.0.0.1:11434/v1/chat/completions")
         payload = _ollama_native_chat_payload(

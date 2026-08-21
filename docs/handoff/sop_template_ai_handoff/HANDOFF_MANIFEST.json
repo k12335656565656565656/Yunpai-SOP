@@ -13,7 +13,9 @@
     "rendered_page_formula": "1 + route_step_count",
     "current_hdmi_route_step_count": 17,
     "current_expected_pages": 18,
-    "step_order_each_instruction": "1,2,3 / 6,5,4"
+    "default_work_image_slots": 3,
+    "allowed_work_image_slots": [1, 2, 3, 4, 5, 6],
+    "step_order_each_instruction": "dynamic; 3-slot default is 1,2,3; 6-slot layout is 1,2,3 / 6,5,4"
   },
   "document": "SOP完整模板_HDMI线制作_草案.docx",
   "expected_outputs": [

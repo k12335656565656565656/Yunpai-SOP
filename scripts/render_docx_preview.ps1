@@ -82,13 +82,13 @@ else {
 Get-ChildItem -LiteralPath $outputRoot -Filter 'page-*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
 $pdftocairo = (Get-Command pdftocairo.exe -ErrorAction SilentlyContinue).Source
 if ($pdftocairo) {
-    & $pdftocairo -png -r 110 $pdfPath (Join-Path $outputRoot 'page')
+    & $pdftocairo -png -r 180 $pdfPath (Join-Path $outputRoot 'page')
     if ($LASTEXITCODE -ne 0) { throw "pdftocairo failed with exit code $LASTEXITCODE" }
 }
 else {
     $pdftoppm = Get-Command pdftoppm.exe -ErrorAction SilentlyContinue
     if ($pdftoppm) {
-        & $pdftoppm.Source -png -r 110 $pdfPath (Join-Path $outputRoot 'page')
+        & $pdftoppm.Source -png -r 180 $pdfPath (Join-Path $outputRoot 'page')
         if ($LASTEXITCODE -ne 0) { throw "pdftoppm failed with exit code $LASTEXITCODE" }
     }
 }
@@ -96,24 +96,25 @@ else {
 $pages = @(Get-ChildItem -LiteralPath $outputRoot -Filter 'page-*.png' | Sort-Object Name)
 if ($pages.Count -eq 0) {
     $projectRoot = Split-Path -Parent $PSScriptRoot
-    $pythonCandidates = @(
-        $env:SOP_PREVIEW_PYTHON,
-        (Join-Path $projectRoot '.venv\Scripts\python.exe'),
-        (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
-    )
-    $python = $pythonCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
-    if (-not $python) {
-        throw 'No PDF page renderer is available.'
-    }
     $rendererScript = Join-Path $PSScriptRoot 'render_pdf_pages.py'
-    & $python $rendererScript '--input' $pdfPath '--output-directory' $outputRoot '--dpi' '110'
-    if ($LASTEXITCODE -ne 0) {
-        throw "PyMuPDF page rendering failed with exit code $LASTEXITCODE."
+    if (Test-Path -LiteralPath $rendererScript) {
+        $pythonCandidates = @(
+            $env:SOP_PREVIEW_PYTHON,
+            (Join-Path $projectRoot '.venv\Scripts\python.exe'),
+            (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
+        )
+        $python = $pythonCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+        if ($python) {
+            $rendererOutput = & $python $rendererScript '--input' $pdfPath '--output-directory' $outputRoot '--dpi' '180'
+            if ($LASTEXITCODE -ne 0) {
+                throw "PyMuPDF page rendering failed with exit code $LASTEXITCODE."
+            }
+            if (-not $rendererOutput) {
+                throw 'PyMuPDF page rendering did not return a result.'
+            }
+        }
     }
     $pages = @(Get-ChildItem -LiteralPath $outputRoot -Filter 'page-*.png' | Sort-Object Name)
-}
-if ($pages.Count -eq 0) {
-    throw 'PDF preview did not produce page images.'
 }
 
 [pscustomobject]@{

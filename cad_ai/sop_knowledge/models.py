@@ -61,6 +61,36 @@ class ProductFeatureSet(BaseModel):
     evidence: list[EvidenceRef] = Field(default_factory=list)
 
 
+class StepIeItemDraft(BaseModel):
+    id: int | None = Field(default=None, ge=1)
+    action: str = Field(min_length=1, max_length=80)
+    machine_type: str = Field(default="", max_length=120)
+    equipment_speed: str = Field(default="", max_length=120)
+    unit_price: str = Field(default="", max_length=80)
+    headcount: str = Field(default="", max_length=80)
+    standard_time: str = Field(default="", max_length=80)
+    allowance_rate: str = Field(default="", max_length=80)
+    standard_capacity: str = Field(default="", max_length=120)
+    time_source: str = Field(default="", max_length=160)
+    note: str = Field(default="", max_length=300)
+
+    @field_validator(
+        "action",
+        "machine_type",
+        "equipment_speed",
+        "unit_price",
+        "headcount",
+        "standard_time",
+        "allowance_rate",
+        "standard_capacity",
+        "time_source",
+        "note",
+    )
+    @classmethod
+    def strip_ie_text(cls, value: str) -> str:
+        return value.strip()
+
+
 class RouteStepDraft(BaseModel):
     step_code: str
     sequence_no: float
@@ -68,6 +98,8 @@ class RouteStepDraft(BaseModel):
     parent_step_code: str | None = None
     action: str
     why: str
+    work_image_slots: int = Field(default=3, ge=1, le=6)
+    ie_items: list[StepIeItemDraft] = Field(default_factory=list, max_length=6)
     inputs: list[str] = Field(default_factory=list)
     materials: list[str] = Field(default_factory=list)
     tool_equipment: list[str] = Field(default_factory=list)

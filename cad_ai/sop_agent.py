@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from docx import Document
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .sop_visual_template import (
     IE_TIME_STUDY_FIELDS,
@@ -36,6 +36,39 @@ SOP_GENERATION_SEQUENCE = [
 SOP_STATUS_DRAFT = "demo_not_for_release"
 SOP_RIGHT_SECTION_TITLES = ["作业标准", "设备/工具", "辅助材料", "注意事项", "变更内容", "物料表"]
 SOP_BOTTOM_SECTION_TITLES = ["批准", "审核", "制作", "材料环保要求", "管制文件（印章处）", "图号"]
+SOP_TECHNICAL_PARAMETER_NAMES = ["规格", "公差", "材质"]
+
+
+class SopParameterFields(BaseModel):
+    speed_m_per_min: float | None = Field(default=None, gt=0)
+    mold_id: str | None = None
+    cavity_count: int | None = Field(default=None, gt=0)
+    tech_params: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("mold_id", mode="before")
+    @classmethod
+    def _normalize_optional_mold_id(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("tech_params", mode="before")
+    @classmethod
+    def _normalize_technical_parameters(cls, value: Any) -> dict[str, str]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("tech_params must be a JSON object")
+        normalized: dict[str, str] = {}
+        for raw_key, raw_value in value.items():
+            key = str(raw_key).strip()
+            if not key or raw_value is None:
+                continue
+            parameter_value = str(raw_value).strip()
+            if parameter_value:
+                normalized[key] = parameter_value
+        return normalized
 
 
 class SopBomItem(BaseModel):
@@ -47,7 +80,7 @@ class SopBomItem(BaseModel):
     note: str = ""
 
 
-class SopRoutingStep(BaseModel):
+class SopRoutingStep(SopParameterFields):
     name: str
     description: str = ""
     station: str = ""
@@ -58,7 +91,7 @@ class SopRoutingStep(BaseModel):
     standard_time_s: float | None = None
 
 
-class SopGenerateRequest(BaseModel):
+class SopGenerateRequest(SopParameterFields):
     product_name: str
     part_no: str
     document_no: str
@@ -237,12 +270,41 @@ def _build_model_prompt(request: SopGenerateRequest) -> str:
     bom_text = "；".join(f"{item.name}/{item.specification}/{item.quantity}" for item in request.bom_items[:16]) or "未提供BOM明细"
     routing_text = "；".join(step.name for step in request.routing_steps[:12]) or "请从需求摘要拆解"
     machines = "；".join(request.machine_hints[:12]) or "未提供设备型号，需标待确认"
+    grounded_parameters = _grounded_sop_parameters(request)
+    route_technical = grounded_parameters["technical_parameters"]
+    route_production = grounded_parameters["production_parameters"]
+    technical_text = "；".join(
+        f"{name}={route_technical['values'].get(name) or '待确认'}"
+        for name in SOP_TECHNICAL_PARAMETER_NAMES
+    )
+    extra_technical_text = "；".join(
+        f"{name}={value}"
+        for name, value in route_technical["values"].items()
+        if name not in SOP_TECHNICAL_PARAMETER_NAMES
+    )
+    if extra_technical_text:
+        technical_text = f"{technical_text}；{extra_technical_text}"
+    production_text = (
+        f"线速={_format_parameter_number(route_production['speed_m_per_min']) + ' 米/分钟' if route_production['speed_m_per_min'] is not None else '待确认'}；"
+        f"模具号={route_production['mold_id'] or '待确认'}；"
+        f"模数={route_production['cavity_count'] if route_production['cavity_count'] is not None else '待确认'}"
+    )
+    technical_parameter_json = json.dumps(route_technical, ensure_ascii=False, separators=(",", ":"))
+    production_parameter_json = json.dumps(route_production, ensure_ascii=False, separators=(",", ":"))
+    step_parameter_text = "；".join(
+        _parameter_prompt_step_line(step)
+        for step in grounded_parameters["step_parameters"]
+        if step["has_step_override"]
+    ) or "无工序级人工覆盖"
     return f"""只输出一个紧凑JSON对象，不要Markdown。你负责生成SOP内容，Word渲染器只负责排版。
 产品:{request.product_name}; 料号:{request.part_no}; 文件:{request.document_no}; 图号:{request.drawing_no}; 工站:{request.station}
 需求:{request.requirement_text}
 BOM线索:{bom_text}
 工艺路线线索:{routing_text}
 设备/治具线索:{machines}
+人工提供的技术参数:{technical_text}
+人工提供的生产参数:{production_text}
+工序级人工覆盖:{step_parameter_text}
 输出结构:
 {{
  "status":"demo_not_for_release",
@@ -251,6 +313,8 @@ BOM线索:{bom_text}
  "sections":[["作业标准","短句1","短句2"],["设备/工具","短句1","短句2"],["辅助材料","短句1","短句2"],["注意事项","短句1","短句2"],["变更内容","短句1","短句2"],["物料表","短句1","短句2"]],
  "nodes":[["节点名","type","shape"]],
  "edges":[["OP01","OP02","next"]],
+ "technical_parameters":{technical_parameter_json},
+ "production_parameters":{production_parameter_json},
  "notes":["草案说明"]
 }}
 硬规则:
@@ -259,6 +323,7 @@ BOM线索:{bom_text}
 - sections按示例6个标题顺序输出，每项最多2个短句。
 - nodes 8到10个；覆盖来料核对、加工/装配、检查/测试、合格判定、最终清洁/贴标/包装入库；不能以合格判定结束；节点名不要包含OP编号。
 - 检查/检验/测量/AOI/ICT/FCT/EOL/合格判定=diamond; 装配/点胶/固化/清洁/包装=ellipse。
+- 技术参数和生产参数只能照抄上述人工值；待确认项保持待确认，不得推测、补写或改写。最终参数仍由后端按人工输入强制覆盖。
 - 不写真实工厂、人员签核、EHS审批、良率、OEE、试产或发布结论。
 """
 
@@ -289,12 +354,12 @@ def _build_structured_sop_data(request: SopGenerateRequest) -> dict[str, Any]:
         "nodes": nodes,
         "edges": [[f"OP{i:02d}", f"OP{i + 1:02d}", "next"] for i in range(1, len(nodes))],
         "notes": ["结构化需求生成；demo_not_for_release"],
-    }
+    } | _grounded_sop_parameters(request)
 
 
 def _expand_sop_data(request: SopGenerateRequest, data: dict[str, Any]) -> dict[str, Any]:
     if data.get("metadata") and data.get("step_slots") and data.get("flowchart"):
-        return data
+        return _apply_grounded_sop_parameters(request, data)
     steps = list(data.get("steps") or [])
     nodes = list(data.get("nodes") or [])
     sections = list(data.get("sections") or [])
@@ -337,7 +402,7 @@ def _expand_sop_data(request: SopGenerateRequest, data: dict[str, Any]) -> dict[
             }
         )
     flow_nodes = _expand_compact_nodes(nodes, request.station)
-    return {
+    expanded = {
         "status": data.get("status") or SOP_STATUS_DRAFT,
         "metadata": {
             "product_name": request.product_name,
@@ -359,6 +424,145 @@ def _expand_sop_data(request: SopGenerateRequest, data: dict[str, Any]) -> dict[
         },
         "notes": data.get("notes") or ["demo_not_for_release"],
     }
+    return _apply_grounded_sop_parameters(request, expanded)
+
+
+def _grounded_sop_parameters(request: SopGenerateRequest) -> dict[str, Any]:
+    route_technical_values = dict(request.tech_params)
+    route_production_values = {
+        "speed_m_per_min": request.speed_m_per_min,
+        "mold_id": request.mold_id,
+        "cavity_count": request.cavity_count,
+    }
+    technical_parameters = _technical_parameter_payload(
+        route_technical_values,
+        sources={name: "human_route_input" for name in route_technical_values},
+    )
+    production_parameters = _production_parameter_payload(
+        route_production_values,
+        sources={name: "human_route_input" for name, value in route_production_values.items() if value is not None},
+    )
+
+    step_parameters: list[dict[str, Any]] = []
+    for index, step in enumerate(request.routing_steps, start=1):
+        technical_values = dict(route_technical_values)
+        technical_sources = {name: "human_route_input" for name in technical_values}
+        technical_values.update(step.tech_params)
+        technical_sources.update({name: "human_step_input" for name in step.tech_params})
+
+        production_values: dict[str, Any] = {}
+        production_sources: dict[str, str] = {}
+        for field_name in ["speed_m_per_min", "mold_id", "cavity_count"]:
+            step_value = getattr(step, field_name)
+            route_value = getattr(request, field_name)
+            if step_value is not None:
+                production_values[field_name] = step_value
+                production_sources[field_name] = "human_step_input"
+            else:
+                production_values[field_name] = route_value
+                if route_value is not None:
+                    production_sources[field_name] = "human_route_input"
+
+        overrides = {
+            "speed_m_per_min": step.speed_m_per_min,
+            "mold_id": step.mold_id,
+            "cavity_count": step.cavity_count,
+            "tech_params": dict(step.tech_params),
+        }
+        step_parameters.append(
+            {
+                "step_no": index,
+                "step_name": step.name,
+                "has_step_override": any(
+                    value is not None
+                    for value in [step.speed_m_per_min, step.mold_id, step.cavity_count]
+                )
+                or bool(step.tech_params),
+                "overrides": overrides,
+                "technical_parameters": _technical_parameter_payload(technical_values, sources=technical_sources),
+                "production_parameters": _production_parameter_payload(production_values, sources=production_sources),
+            }
+        )
+
+    return {
+        "technical_parameters": technical_parameters,
+        "production_parameters": production_parameters,
+        "step_parameters": step_parameters,
+        "parameter_policy": {
+            "precedence": ["human_step_input", "human_route_input", "authoritative_master_data", "needs_confirmation"],
+            "model_values_allowed": False,
+        },
+    }
+
+
+def _technical_parameter_payload(values: dict[str, str], *, sources: dict[str, str]) -> dict[str, Any]:
+    missing = [name for name in SOP_TECHNICAL_PARAMETER_NAMES if not values.get(name)]
+    return {
+        "values": dict(values),
+        "status": "provided" if not missing else "needs_confirmation",
+        "missing": missing,
+        "sources": {name: sources[name] for name in values if name in sources},
+    }
+
+
+def _production_parameter_payload(values: dict[str, Any], *, sources: dict[str, str]) -> dict[str, Any]:
+    field_names = ["speed_m_per_min", "mold_id", "cavity_count"]
+    missing = [name for name in field_names if values.get(name) is None]
+    return {
+        **{name: values.get(name) for name in field_names},
+        "status": "provided" if not missing else "needs_confirmation",
+        "missing": missing,
+        "sources": {name: sources[name] for name in field_names if name in sources},
+    }
+
+
+def _apply_grounded_sop_parameters(request: SopGenerateRequest, data: dict[str, Any]) -> dict[str, Any]:
+    grounded = dict(data)
+    grounded.update(_grounded_sop_parameters(request))
+    return grounded
+
+
+def _parameter_prompt_step_line(step_parameters: dict[str, Any]) -> str:
+    overrides = step_parameters.get("overrides") or {}
+    parts: list[str] = []
+    if overrides.get("speed_m_per_min") is not None:
+        parts.append(f"线速={_format_parameter_number(overrides['speed_m_per_min'])} 米/分钟")
+    if overrides.get("mold_id") is not None:
+        parts.append(f"模具号={overrides['mold_id']}")
+    if overrides.get("cavity_count") is not None:
+        parts.append(f"模数={overrides['cavity_count']}")
+    parts.extend(f"{name}={value}" for name, value in (overrides.get("tech_params") or {}).items())
+    return f"工序{step_parameters['step_no']} {step_parameters['step_name']}：" + "，".join(parts)
+
+
+def _format_parameter_number(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _parameter_sections_from_sop_data(data: dict[str, Any]) -> list[dict[str, Any]]:
+    technical = data.get("technical_parameters") or {}
+    technical_values = technical.get("values") or {}
+    technical_lines = [f"{name}：{technical_values.get(name) or '待确认'}" for name in SOP_TECHNICAL_PARAMETER_NAMES]
+    technical_lines.extend(
+        f"{name}：{value}"
+        for name, value in technical_values.items()
+        if name not in SOP_TECHNICAL_PARAMETER_NAMES
+    )
+
+    production = data.get("production_parameters") or {}
+    speed = production.get("speed_m_per_min")
+    cavity_count = production.get("cavity_count")
+    production_lines = [
+        f"线速：{_format_parameter_number(speed)} 米/分钟" if speed is not None else "线速：待确认",
+        f"模具号：{production.get('mold_id') or '待确认'}",
+        f"模数：{cavity_count if cavity_count is not None else '待确认'}",
+    ]
+    return [
+        {"title": "技术参数", "lines": technical_lines, "status": technical.get("status") or "needs_confirmation"},
+        {"title": "生产参数", "lines": production_lines, "status": production.get("status") or "needs_confirmation"},
+    ]
 
 
 def _build_pages(request: SopGenerateRequest, data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -395,6 +599,7 @@ def _build_pages(request: SopGenerateRequest, data: dict[str, Any]) -> tuple[dic
     work_page["operation_order"] = data.get("operation_order") or " -> ".join(operation_names[:6])
     work_page["step_slots"] = _normalize_step_slots(data.get("step_slots") or [])
     work_page["side_sections"] = _normalize_side_sections(data.get("side_sections") or [])
+    work_page["parameter_sections"] = _parameter_sections_from_sop_data(data)
     work_page["ie_time_study"] = _work_ie_time_study(data)
     work_page["bottom_sections"] = [
         {"title": "批准", "value": ""},
