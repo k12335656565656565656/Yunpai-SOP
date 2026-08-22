@@ -21,6 +21,11 @@ from openpyxl.utils import get_column_letter, range_boundaries
 from openpyxl.worksheet.page import PageMargins
 
 
+DOCX_CJK_FONT = os.environ.get("SOP_DOCX_CJK_FONT") or (
+    "SimSun" if os.name == "nt" else "Noto Sans CJK SC"
+)
+
+
 REFERENCE_80806_129_FORMAT: dict[str, Any] = {
     "source_pdf": "80806-129.pdf",
     "source_title": "80806-129  SOP-EH.xlsx",
@@ -599,9 +604,9 @@ def _build_sop_word_document(flow_page: dict[str, Any], work_page: dict[str, Any
 def _set_document_defaults(document: Any) -> None:
     styles = document.styles
     normal = styles["Normal"]
-    normal.font.name = "SimSun"
+    normal.font.name = DOCX_CJK_FONT
     normal.font.size = Pt(9)
-    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "SimSun")
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"), DOCX_CJK_FONT)
 
 
 def _configure_word_section(section: Any, *, landscape: bool) -> None:
@@ -1508,11 +1513,11 @@ def _set_word_cell(
             paragraph.add_run().add_break()
         run = paragraph.add_run(line)
         run.bold = bold
-        run.font.name = "SimSun"
+        run.font.name = DOCX_CJK_FONT
         run.font.size = Pt(size)
         if color:
             run.font.color.rgb = _rgb_color(color)
-        run._element.rPr.rFonts.set(qn("w:eastAsia"), "SimSun")
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), DOCX_CJK_FONT)
     cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     _set_word_cell_margins(cell, top=80, start=100, bottom=80, end=100)
     if shaded:

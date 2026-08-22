@@ -17,7 +17,7 @@ from .store import SopKnowledgeStore
 
 CURRENT_PREVIEW_DIR_NAME = "preview-current"
 VERSIONED_PREVIEW_DIR_PREFIX = "preview-version-"
-PREVIEW_PAGE_DPI = 180
+PREVIEW_PAGE_DPI = 144
 
 MULTI_PAGE_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v3"
 MULTI_PAGE_LAYOUT_MODE = "portrait_flow_then_repeated_landscape_work_instructions"
@@ -167,6 +167,13 @@ class SopDocumentService:
         if self._is_readable_file(file_path):
             return file_path, mime_type, filename
 
+        if kind == "page" and page_no is not None:
+            with self._lock_for(route_id):
+                if not self._is_readable_file(file_path):
+                    self._render_preview_page(Path(manifest["pdf_path"]), file_path, page_no)
+            if self._is_readable_file(file_path):
+                return file_path, mime_type, filename
+
         self.generate(route_id)
         failure = self._current_preview_failure(route_id)
         if failure:
@@ -312,8 +319,7 @@ class SopDocumentService:
             staging_output = staging_dir / "rendered"
             shutil.copy2(docx_path, staging_docx)
             pdf_path = self._convert_docx_to_pdf(staging_docx, staging_output)
-            page_files = self._render_pdf_pages(pdf_path, staging_output)
-            page_count = len(page_files)
+            page_count = self._pdf_page_count(pdf_path)
             if page_count < 1:
                 raise RuntimeError("DOCX 预览转换没有返回有效页数")
             if expected_page_count is not None and page_count != expected_page_count:
@@ -321,9 +327,10 @@ class SopDocumentService:
             target_pdf = staging_output / f"{docx_path.stem}.pdf"
             if pdf_path != target_pdf:
                 pdf_path.replace(target_pdf)
+            self._render_preview_page(target_pdf, staging_output / "page-001.png", 1)
             published_dir = self._publish_preview_directory(staging_output, output_dir)
         pdf_files = sorted(published_dir.glob("*.pdf"))
-        page_files = sorted(published_dir.glob("page-*.png"))
+        page_files = [published_dir / f"page-{index:03d}.png" for index in range(1, page_count + 1)]
         return {
             "pdf_path": str(pdf_files[0].resolve()),
             "page_paths": [str(item.resolve()) for item in page_files],
@@ -489,21 +496,39 @@ class SopDocumentService:
         os.replace(temporary, path)
 
     @staticmethod
-    def _render_pdf_pages(pdf_path: Path, output_dir: Path) -> list[Path]:
+    def _render_preview_page(pdf_path: Path, output_path: Path, page_no: int) -> None:
         try:
             import pymupdf
         except ImportError as exc:
             raise RuntimeError("PDF 分页预览不可用：缺少 PyMuPDF 依赖") from exc
-        output_dir.mkdir(parents=True, exist_ok=True)
-        for artifact in output_dir.glob("page-*.png"):
-            artifact.unlink()
         document = pymupdf.open(pdf_path)
         try:
-            for index, page in enumerate(document, start=1):
-                page.get_pixmap(dpi=PREVIEW_PAGE_DPI, alpha=False).save(output_dir / f"page-{index:03d}.png")
+            if page_no < 1 or page_no > len(document):
+                raise IndexError(f"preview page {page_no} is out of range")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            document[page_no - 1].get_pixmap(dpi=PREVIEW_PAGE_DPI, alpha=False).save(output_path)
         finally:
             document.close()
-        return sorted(output_dir.glob("page-*.png"))
+
+    @staticmethod
+    def _pdf_page_count(pdf_path: Path) -> int:
+        try:
+            import pymupdf
+        except ImportError as exc:
+            raise RuntimeError("PDF 分页预览不可用：缺少 PyMuPDF 依赖") from exc
+        document = pymupdf.open(pdf_path)
+        try:
+            return len(document)
+        finally:
+            document.close()
+
+    @classmethod
+    def _render_pdf_pages(cls, pdf_path: Path, output_dir: Path) -> list[Path]:
+        """Compatibility helper for explicit full-page rendering in tests/tools."""
+        page_paths = [output_dir / f"page-{index:03d}.png" for index in range(1, cls._pdf_page_count(pdf_path) + 1)]
+        for index, page_path in enumerate(page_paths, start=1):
+            cls._render_preview_page(pdf_path, page_path, index)
+        return page_paths
 
     def _generate_template_package(self, route_id: int, output_dir: Path) -> dict[str, Any]:
         if not self.template_script.is_file():
