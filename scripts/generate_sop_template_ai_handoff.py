@@ -890,7 +890,7 @@ def validate_multi_page_document(
         "top_level_tables": len(tables) == expected_tables,
         "portrait_flow_section": document.sections[0].orientation == WD_ORIENT.PORTRAIT,
         "landscape_instruction_section": document.sections[1].orientation == WD_ORIENT.LANDSCAPE,
-        "instruction_page_count": expected_instruction_pages > 1,
+        "instruction_page_count": expected_instruction_pages >= 1,
         "blank_signoff_cells_every_page": signoffs_blank,
         "version_is_draft_every_page": draft_headers,
         "document_date_every_page": dates_match,

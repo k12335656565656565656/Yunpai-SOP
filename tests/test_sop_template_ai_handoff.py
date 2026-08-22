@@ -177,6 +177,33 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             self.assertIn("记录要求（最新）", second_instruction_body.cell(4, 7).text)
             self.assertIn("登记工单号和异常现象", second_instruction_body.cell(4, 7).text)
 
+    def test_route_backed_hdmi_allows_a_single_instruction_page(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SopKnowledgeStore(root / "knowledge.sqlite3")
+            store.initialize()
+            store.ensure_process_family("test_family", "Test process family")
+            identity = make_identity("HDMI-SINGLE-STEP")
+            store.upsert_product(identity, {"class": "cable"})
+            route_id = store.create_route(make_route(identity, 1))
+
+            result = generate_route_package(
+                root / "package",
+                document_date="2026-08-12",
+                db_path=store.path,
+                route_id=route_id,
+            )
+
+            self.assertTrue(result["structural_pass"])
+            self.assertEqual(result["instruction_page_count"], 1)
+            self.assertEqual(result["expected_page_count"], 2)
+            document = Document(result["document_docx"])
+            self.assertEqual(len(document.sections), 2)
+            self.assertEqual(len(document.tables), 8)
+            validation = json.loads((root / "package" / VALIDATION_NAME).read_text(encoding="utf-8"))
+            self.assertTrue(validation["structural_pass"])
+            self.assertEqual(validation["errors"], [])
+
     def test_route_backed_hdmi_supports_every_work_image_layout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

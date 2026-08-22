@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from io import BytesIO
 from html import escape
 from pathlib import Path
@@ -865,13 +866,24 @@ def _render_center_flowchart_shape_image(page: dict[str, Any], *, width: int = 1
 
 
 def _shape_flowchart_font_path() -> Path | None:
-    for candidate in [
-        Path("C:/Windows/Fonts/simsun.ttc"),
-        Path("C:/Windows/Fonts/msyh.ttc"),
-        Path("C:/Windows/Fonts/simhei.ttf"),
-    ]:
-        if candidate.exists():
-            return candidate
+    if os.name == "nt":
+        candidates = [
+            Path("C:/Windows/Fonts/simsun.ttc"),
+            Path("C:/Windows/Fonts/msyh.ttc"),
+            Path("C:/Windows/Fonts/simhei.ttf"),
+        ]
+    else:
+        candidates = [
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+        ]
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
     return None
 
 
@@ -1309,8 +1321,13 @@ def _fill_word_step_cells(
 ) -> None:
     slot = slot or {"slot_no": slot_no, "image_label": "图片占位", "text_placeholder": ""}
     step_text = _clean_step_text(str(slot.get("text_placeholder") or ""))
-    image_path = Path(str(slot.get("image_path") or ""))
-    if image_path.is_file():
+    image_path_text = str(slot.get("image_path") or "").strip()
+    image_path = Path(image_path_text) if image_path_text else None
+    try:
+        has_image = image_path is not None and image_path.is_file()
+    except OSError:
+        has_image = False
+    if has_image and image_path is not None:
         _fill_word_image_cell(
             image_cell,
             image_path,
