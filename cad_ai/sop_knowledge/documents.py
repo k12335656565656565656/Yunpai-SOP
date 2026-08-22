@@ -168,9 +168,14 @@ class SopDocumentService:
             return file_path, mime_type, filename
 
         if kind == "page" and page_no is not None:
-            with self._lock_for(route_id):
-                if not self._is_readable_file(file_path):
-                    self._render_preview_page(Path(manifest["pdf_path"]), file_path, page_no)
+            try:
+                with self._lock_for(route_id):
+                    if not self._is_readable_file(file_path):
+                        self._render_preview_page(Path(manifest["pdf_path"]), file_path, page_no)
+            except Exception:
+                # A damaged or temporarily locked PDF cannot satisfy a page
+                # request. Fall through to the existing full regeneration path.
+                pass
             if self._is_readable_file(file_path):
                 return file_path, mime_type, filename
 

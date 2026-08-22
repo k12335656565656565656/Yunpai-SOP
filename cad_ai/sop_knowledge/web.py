@@ -21,6 +21,9 @@ from .nl_assistant import NaturalLanguageSopAssistant
 from .store import SopKnowledgeStore
 
 
+IMMUTABLE_PREVIEW_CACHE = "public, max-age=31536000, immutable"
+
+
 class ReviewerRequest(BaseModel):
     reviewer: str
     comment: str = ""
@@ -421,10 +424,16 @@ def create_review_app(db_path: str | Path):
         return FileResponse(path, media_type=mime_type, content_disposition_type="inline")
 
     @app.get("/api/routes/{route_id}/documents/pages/{page_no}.png")
-    def preview_page(route_id: int, page_no: int):
+    def preview_page(route_id: int, page_no: int, v: str | None = None):
         from fastapi.responses import FileResponse
         path, mime_type, _ = guard(lambda: documents.resolve_file(route_id, "page", page_no=page_no))
-        return FileResponse(path, media_type=mime_type, content_disposition_type="inline")
+        cache_control = IMMUTABLE_PREVIEW_CACHE if v else "no-store"
+        return FileResponse(
+            path,
+            media_type=mime_type,
+            content_disposition_type="inline",
+            headers={"Cache-Control": cache_control},
+        )
 
     @app.post("/api/routes/{route_id}/nl/preview")
     def nl_preview(route_id: int, request: NlPreviewRequest) -> dict[str, Any]:
@@ -692,7 +701,15 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
             self.end_headers()
             self.wfile.write(data)
 
-        def _send_file(self, path: str | Path, mime_type: str, *, filename: str | None = None, attachment: bool = False) -> None:
+        def _send_file(
+            self,
+            path: str | Path,
+            mime_type: str,
+            *,
+            filename: str | None = None,
+            attachment: bool = False,
+            cache_control: str = "no-store",
+        ) -> None:
             data = Path(path).read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", mime_type)
@@ -700,7 +717,7 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
             disposition = "attachment" if attachment else "inline"
             safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename or Path(path).name)
             self.send_header("Content-Disposition", f'{disposition}; filename="{safe_name}"')
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache_control)
             self.end_headers()
             self.wfile.write(data)
 
@@ -759,7 +776,8 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
                     file_path, mime_type, filename = documents.resolve_file(
                         int(match.group(1)), "page", page_no=int(match.group(2))
                     )
-                    self._send_file(file_path, mime_type, filename=filename)
+                    cache_control = IMMUTABLE_PREVIEW_CACHE if query.get("v") else "no-store"
+                    self._send_file(file_path, mime_type, filename=filename, cache_control=cache_control)
                 except Exception as exc:
                     self._send(400, {"detail": str(exc)})
             elif match := re.fullmatch(r"/api/media/(\d+)", path):

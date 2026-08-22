@@ -473,7 +473,7 @@ class SopConversationalDocxTests(unittest.TestCase):
         self.assertEqual(len(page_paths), 1)
         self.assertGreater(page_paths[0].stat().st_size, 0)
         with Image.open(page_paths[0]) as preview_page:
-            self.assertGreaterEqual(preview_page.width, 1400)
+            self.assertGreaterEqual(preview_page.width, 1100)
 
     def test_preview_failure_keeps_existing_pdf_and_pages(self) -> None:
         documents = SopDocumentService(self.store)

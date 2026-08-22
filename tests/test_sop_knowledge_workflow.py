@@ -18,7 +18,7 @@ from cad_ai.sop_knowledge.models import ProductIdentity, RouteDraft, RouteSectio
 from cad_ai.sop_knowledge.pipeline import RouteValidator, SopRouteWorkflow
 from cad_ai.sop_knowledge.renderer import VariableRouteDocxRenderer
 from cad_ai.sop_knowledge.store import SopKnowledgeStore
-from cad_ai.sop_knowledge.web import create_builtin_server
+from cad_ai.sop_knowledge.web import create_builtin_server, create_review_app
 from cad_ai.sop_agent import SopGenerateRequest, SopRoutingStep, _build_structured_sop_data
 
 
@@ -342,6 +342,12 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
             self.assertIn('id="docPages"', simple_page)
             self.assertIn("doc.page_urls", simple_page)
             self.assertIn("scheduleDocumentRefresh", simple_page)
+            self.assertIn('data-src="${esc(url)}"', simple_page)
+            self.assertNotIn('<img src="${esc(url)}"', simple_page)
+            self.assertIn("IntersectionObserver", simple_page)
+            self.assertIn("MAX_PREVIEW_IMAGE_REQUESTS=2", simple_page)
+            self.assertIn("PREVIEW_IMAGE_TIMEOUT_MS=30000", simple_page)
+            self.assertIn("data-page-retry", simple_page)
             self.assertIn("定位并高亮", simple_page)
             self.assertIn('id="returnPreview"', simple_page)
             self.assertIn("编辑工艺路线", simple_page)
@@ -392,6 +398,51 @@ class SopKnowledgeWorkflowTests(unittest.TestCase):
                 second.server_close()
         finally:
             first.server_close()
+
+    def test_builtin_versioned_preview_page_is_immutable_in_browser_cache(self) -> None:
+        preview_page = self.root / "preview-page.png"
+        preview_page.write_bytes(b"preview-page")
+        with patch(
+            "cad_ai.sop_knowledge.web.SopDocumentService.resolve_file",
+            return_value=(preview_page, "image/png", "page-1.png"),
+        ):
+            server = create_builtin_server(self.store.path, "127.0.0.1", 0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+                response = urllib.request.urlopen(
+                    base + "/api/routes/1/documents/pages/1.png?v=version-token",
+                    timeout=5,
+                )
+                self.assertEqual(response.read(), b"preview-page")
+                self.assertEqual(
+                    response.headers.get("Cache-Control"),
+                    "public, max-age=31536000, immutable",
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+    def test_fastapi_versioned_preview_page_is_immutable_in_browser_cache(self) -> None:
+        from fastapi.testclient import TestClient
+
+        preview_page = self.root / "fastapi-preview-page.png"
+        preview_page.write_bytes(b"preview-page")
+        with patch(
+            "cad_ai.sop_knowledge.web.SopDocumentService.resolve_file",
+            return_value=(preview_page, "image/png", "page-1.png"),
+        ):
+            client = TestClient(create_review_app(self.store.path))
+            response = client.get("/api/routes/1/documents/pages/1.png?v=version-token")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"preview-page")
+        self.assertEqual(
+            response.headers.get("Cache-Control"),
+            "public, max-age=31536000, immutable",
+        )
 
     def test_builtin_server_route_editor_endpoints_regenerate_documents(self) -> None:
         route_id = self.add_route("TEST-ROUTE-EDITOR")
