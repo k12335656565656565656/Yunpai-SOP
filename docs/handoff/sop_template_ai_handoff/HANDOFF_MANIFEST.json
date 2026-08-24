@@ -1,7 +1,7 @@
 {
-  "schema_version": "2.0",
-  "package_id": "yunpai.sop_template.ai_handoff.v2",
-  "template_id": "yunpai.sop.hdmi-cable.multi-page.v3",
+  "schema_version": "2.1",
+  "package_id": "yunpai.sop_template.ai_handoff.v3",
+  "template_id": "yunpai.sop.hdmi-cable.multi-page.v4",
   "workspace_root": ".",
   "primary_instruction": "docs/handoff/sop_template_ai_handoff/README_AI_HANDOFF.md",
   "copyable_prompt": "docs/handoff/sop_template_ai_handoff/NEXT_SESSION_PROMPT.md",
@@ -9,13 +9,13 @@
   "required_arguments": ["--route-db", "--route-id", "--document-date", "--out-dir"],
   "layout": {
     "page_1": "A4 portrait complete process flowchart",
-    "following_pages": "A4 landscape work instructions repeated for every route step",
+    "following_pages": "A4 landscape detailed operation sheet repeated for every route step",
     "rendered_page_formula": "1 + route_step_count",
     "current_hdmi_route_step_count": 17,
     "current_expected_pages": 18,
     "default_work_image_slots": 3,
     "allowed_work_image_slots": [1, 2, 3, 4, 5, 6],
-    "step_order_each_instruction": "dynamic; 3-slot default is 1,2,3; 6-slot layout is 1,2,3 / 6,5,4"
+    "step_order_each_instruction": "dynamic; 1-6 slots use natural left-to-right and top-to-bottom order"
   },
   "document": "SOP完整模板_HDMI线制作_草案.docx",
   "expected_outputs": [

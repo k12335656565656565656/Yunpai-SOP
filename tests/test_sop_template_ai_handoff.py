@@ -137,43 +137,45 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             self.assertEqual(len(document.tables), 16)
             first_instruction_header = document.tables[4]
             first_instruction_body = document.tables[5]
-            first_instruction_ie = document.tables[6]
+            first_instruction_detail = document.tables[6]
             first_instruction_footer = document.tables[7]
-            self.assertAlmostEqual(first_instruction_body.columns[0].width.cm, 1.45, places=1)
-            self.assertAlmostEqual(first_instruction_body.columns[7].width.cm, 5.55, places=1)
-            self.assertGreaterEqual(first_instruction_header.rows[0].height.twips, 520)
-            self.assertGreaterEqual(first_instruction_header.rows[1].height.twips, 460)
-            self.assertGreaterEqual(first_instruction_header.rows[2].height.twips, 500)
+            self.assertAlmostEqual(first_instruction_body.columns[0].width.cm, 2.85, places=1)
+            self.assertAlmostEqual(first_instruction_body.columns[7].width.cm, 2.55, places=1)
+            self.assertGreaterEqual(first_instruction_header.rows[0].height.twips, 500)
+            self.assertGreaterEqual(first_instruction_header.rows[1].height.twips, 420)
+            self.assertGreaterEqual(first_instruction_header.rows[2].height.twips, 440)
             self.assertTrue(
                 all(row.height_rule == WD_ROW_HEIGHT_RULE.AT_LEAST for row in first_instruction_body.rows)
             )
             self.assertTrue(
-                all(row.height_rule == WD_ROW_HEIGHT_RULE.AT_LEAST for row in first_instruction_ie.rows)
+                all(row.height_rule == WD_ROW_HEIGHT_RULE.AT_LEAST for row in first_instruction_detail.rows)
             )
             self.assertTrue(
                 all(row.height_rule == WD_ROW_HEIGHT_RULE.EXACTLY for row in first_instruction_footer.rows)
             )
-            side_font_sizes = [
+            body_font_sizes = [
                 run.font.size.pt
-                for row_index in range(6)
-                for paragraph in first_instruction_body.cell(row_index, 7).paragraphs
-                for run in paragraph.runs
-                if run.font.size is not None
-            ]
-            ie_font_sizes = [
-                run.font.size.pt
-                for row in first_instruction_ie.rows
+                for row in first_instruction_body.rows
                 for cell in row.cells
                 for paragraph in cell.paragraphs
                 for run in paragraph.runs
                 if run.font.size is not None
             ]
-            self.assertGreaterEqual(min(side_font_sizes), 7.5)
-            self.assertGreaterEqual(min(ie_font_sizes), 7.5)
+            detail_font_sizes = [
+                run.font.size.pt
+                for row in first_instruction_detail.rows
+                for cell in row.cells
+                for paragraph in cell.paragraphs
+                for run in paragraph.runs
+                if run.font.size is not None
+            ]
+            self.assertGreaterEqual(min(body_font_sizes), 7.5)
+            self.assertGreaterEqual(min(detail_font_sizes), 7.5)
             self.assertEqual([step["work_image_slots"] for step in store.get_route(route_id)["steps"]], [3, 3, 3])
-            self.assertEqual(len(first_instruction_ie.rows), 5)
-            self.assertIn("技术参数", first_instruction_body.cell(6, 0).text)
-            self.assertIn("生产参数", first_instruction_body.cell(7, 0).text)
+            first_body_text = "\n".join(cell.text for row in first_instruction_body.rows for cell in row.cells)
+            self.assertIn("作业方法", first_body_text)
+            self.assertIn("作业图片", first_body_text)
+            self.assertIn("工艺参数", first_body_text)
             flow_ie_time = document.tables[2]
             self.assertIn("单价", flow_ie_time.cell(1, 3).text)
             self.assertIn("人数", flow_ie_time.cell(1, 4).text)
@@ -182,18 +184,22 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             for page_index in range(3):
                 base = 4 + page_index * 4
                 self.assertEqual(document.tables[base].cell(2, 3).text.strip(), "DRAFT")
-                work_ie_time = document.tables[base + 2]
-                self.assertIn("单价", work_ie_time.cell(1, 3).text)
-                self.assertIn("人数", work_ie_time.cell(1, 4).text)
-                self.assertIn("15.50", work_ie_time.cell(2, 3).text)
-                self.assertIn("2", work_ie_time.cell(2, 4).text)
+                work_body_text = "\n".join(
+                    cell.text for row in document.tables[base + 1].rows for cell in row.cells
+                )
+                self.assertIn("IE 工时（仅显示人工填写值）", work_body_text)
+                self.assertIn("单价 15.50", work_body_text)
+                self.assertIn("人数 2", work_body_text)
                 self.assertEqual(
                     [document.tables[base + 3].cell(1, index).text.strip() for index in range(3)],
                     ["", "", ""],
                 )
-            second_instruction_body = document.tables[9]
-            self.assertIn("记录要求（最新）", second_instruction_body.cell(4, 7).text)
-            self.assertIn("登记工单号和异常现象", second_instruction_body.cell(4, 7).text)
+            second_instruction_detail = document.tables[10]
+            second_detail_text = "\n".join(
+                cell.text for row in second_instruction_detail.rows for cell in row.cells
+            )
+            self.assertIn("异常处理/记录", second_detail_text)
+            self.assertIn("登记工单号和异常现象", second_detail_text)
 
     def test_route_backed_hdmi_allows_a_single_instruction_page(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -267,51 +273,36 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             )
 
             document = Document(result["document_docx"])
-            expected_positions = {
-                1: [(0, 1, "1")],
-                2: [(0, 1, "1"), (0, 4, "2")],
-                3: [(0, 1, "1"), (0, 3, "2"), (0, 5, "3")],
-                4: [(0, 1, "1"), (0, 4, "2"), (3, 4, "3"), (3, 1, "4")],
-                5: [(0, 1, "1"), (0, 3, "2"), (0, 5, "3"), (3, 4, "4"), (3, 1, "5")],
-                6: [(0, 1, "1"), (0, 3, "2"), (0, 5, "3"), (3, 5, "4"), (3, 3, "5"), (3, 1, "6")],
-            }
             for page_index, slot_count in enumerate(range(1, 7)):
                 body = document.tables[5 + page_index * 4]
-                ie_table = document.tables[6 + page_index * 4]
+                detail_table = document.tables[6 + page_index * 4]
                 footer = document.tables[7 + page_index * 4]
                 self.assertEqual(footer.rows[0].height_rule, WD_ROW_HEIGHT_RULE.EXACTLY)
                 self.assertEqual(footer.rows[1].height_rule, WD_ROW_HEIGHT_RULE.EXACTLY)
-                for row, column, prefix in expected_positions[slot_count]:
-                    self.assertTrue(body.cell(row, column).text.strip().startswith(prefix))
-                self.assertEqual(len(ie_table.rows), 2 + slot_count)
-                self.assertIn("技术参数", body.cell(6, 0).text)
-                self.assertIn("生产参数", body.cell(7, 0).text)
-                font_sizes = _work_image_font_sizes(slot_count, "large")
-                side_sizes = [
+                body_text = "\n".join(cell.text for row in body.rows for cell in row.cells)
+                for image_number in range(1, slot_count + 1):
+                    self.assertIn(f"{image_number}.", body_text)
+                self.assertEqual(len(detail_table.rows), 3)
+                self.assertIn("工艺参数", body_text)
+                self.assertIn("IE 工时（仅显示人工填写值）", body_text)
+                body_sizes = [
                     run.font.size.pt
-                    for row_index in range(6)
-                    for paragraph in body.cell(row_index, 7).paragraphs
-                    for run in paragraph.runs
-                    if run.font.size is not None
-                ]
-                parameter_sizes = [
-                    run.font.size.pt
-                    for row_index in (6, 7)
-                    for paragraph in body.cell(row_index, 1).paragraphs
-                    for run in paragraph.runs
-                    if run.font.size is not None
-                ]
-                ie_sizes = [
-                    run.font.size.pt
-                    for row in ie_table.rows[2:]
+                    for row in body.rows
                     for cell in row.cells
                     for paragraph in cell.paragraphs
                     for run in paragraph.runs
                     if run.font.size is not None
                 ]
-                self.assertGreaterEqual(min(side_sizes), font_sizes["side"])
-                self.assertGreaterEqual(min(parameter_sizes), font_sizes["parameter"])
-                self.assertGreaterEqual(min(ie_sizes), font_sizes["ie"])
+                detail_sizes = [
+                    run.font.size.pt
+                    for row in detail_table.rows
+                    for cell in row.cells
+                    for paragraph in cell.paragraphs
+                    for run in paragraph.runs
+                    if run.font.size is not None
+                ]
+                self.assertGreaterEqual(min(body_sizes), 8.0)
+                self.assertGreaterEqual(min(detail_sizes), 8.0)
 
             first_body_text = "\n".join(
                 cell.text for row in document.tables[5].rows for cell in row.cells
@@ -320,10 +311,11 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
                 self.assertIn(method, first_body_text)
 
             six_slot_body = document.tables[5 + 5 * 4]
-            self.assertIn("1. 准备材料", six_slot_body.cell(2, 1).text)
-            self.assertEqual(six_slot_body.cell(2, 3).text.strip(), "2.")
-            self.assertIn("4. 接通设备", six_slot_body.cell(5, 5).text)
-            self.assertIn("6. 记录结果", six_slot_body.cell(5, 1).text)
+            six_slot_text = "\n".join(cell.text for row in six_slot_body.rows for cell in row.cells)
+            self.assertIn("1. 准备材料", six_slot_text)
+            self.assertIn("2. 待补充作业说明", six_slot_text)
+            self.assertIn("4. 接通设备", six_slot_text)
+            self.assertIn("6. 记录结果", six_slot_text)
 
             manifest = json.loads((root / "package" / MANIFEST_NAME).read_text(encoding="utf-8"))
             self.assertEqual(
@@ -331,7 +323,8 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
                 [1, 2, 3, 4, 5, 6],
             )
             validation = json.loads((root / "package" / VALIDATION_NAME).read_text(encoding="utf-8"))
-            self.assertTrue(validation["checks"]["ie_action_rows_match_work_image_slots"])
+            self.assertTrue(validation["checks"]["manual_ie_area_every_page"])
+            self.assertTrue(validation["checks"]["operation_sheet_sections_every_page"])
             self.assertTrue(validation["checks"]["visual_step_order_every_page"])
 
             documents = SopDocumentService(store)
@@ -388,21 +381,16 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
                 route_id=route_id,
             )
             document = Document(result["document_docx"])
-            ie_table = document.tables[6]
-            headers = [ie_table.cell(1, index).text.strip() for index in range(10)]
-            first_row = [ie_table.cell(2, index).text.strip() for index in range(10)]
-            second_row = [ie_table.cell(3, index).text.strip() for index in range(10)]
-
-            self.assertEqual(
-                headers,
-                ["动作", "机器类型", "设备速度", "单价", "人数", "标准工时", "宽放率", "标准产能", "工时来源", "备注"],
+            body_text = "\n".join(
+                cell.text for row in document.tables[5].rows for cell in row.cells
             )
-            self.assertEqual(first_row[0], "剥皮")
-            self.assertEqual(first_row[1], "人工填写的剥皮机")
-            self.assertEqual(first_row[2], "每分钟 12 米")
-            self.assertEqual(first_row[3], "")
-            self.assertEqual(first_row[7], "100 条/小时")
-            self.assertEqual(second_row, ["检查", "", "", "", "", "", "", "", "", ""])
+            self.assertIn("IE 工时（仅显示人工填写值）", body_text)
+            self.assertIn("1. 剥皮", body_text)
+            self.assertIn("机器类型 人工填写的剥皮机", body_text)
+            self.assertIn("设备速度 每分钟 12 米", body_text)
+            self.assertNotIn("单价 待确认", body_text)
+            self.assertIn("标准产能 100 条/小时", body_text)
+            self.assertIn("2. 检查", body_text)
 
     def test_route_backed_hdmi_embeds_only_confirmed_step_media(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -436,8 +424,9 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             document = Document(result["document_docx"])
             first_page_body = document.tables[5]
             second_page_body = document.tables[9]
-            self.assertNotIn("待人工上传确认", first_page_body.cell(0, 1).text)
-            self.assertIn("待人工上传确认", second_page_body.cell(0, 1).text)
+            first_page_text = "\n".join(cell.text for row in first_page_body.rows for cell in row.cells)
+            second_page_text = "\n".join(cell.text for row in second_page_body.rows for cell in row.cells)
+            self.assertLess(first_page_text.count("未配图"), second_page_text.count("未配图"))
 
     def test_check_only_validation_rejects_missing_document(self) -> None:
         result = validate_document(Path("does-not-exist.docx"))

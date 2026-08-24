@@ -18,6 +18,10 @@ from docx.enum.table import WD_ROW_HEIGHT_RULE
 from docx.shared import Cm, Pt, Twips
 
 from cad_ai.sop_agent import SOP_GENERATION_SEQUENCE, _validate_docx_package
+from cad_ai.sop_operation_sheet_v4 import (
+    OPERATION_SHEET_LAYOUT_MODE,
+    render_operation_sheet_v4,
+)
 from cad_ai.sop_visual_template import (
     SOP_FLOWCHART_SHAPE_POLICY,
     _build_sop_word_document,
@@ -47,7 +51,7 @@ from cad_ai.sop_visual_template import (
 
 TEMPLATE_ID = "yunpai.sop.usb_c_cable_packaging.two_page.v1"
 FINAL_DOCX_NAME = "SOP完整模板_USB-C数据线包装_草案.docx"
-HDMI_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v3"
+HDMI_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v4"
 HDMI_FINAL_DOCX_NAME = "SOP完整模板_HDMI线制作_草案.docx"
 CENTER_FLOWCHART_NAME = "center_flowchart.png"
 MANIFEST_NAME = "sop_template_manifest.json"
@@ -215,7 +219,7 @@ def generate_route_package(
             "step_id": step["id"],
             "step_code": step["step_code"],
             "work_image_slots": page["work_image_slots"],
-            "visual_order": _work_image_order_label(page["work_image_slots"]),
+            "visual_order": "1..N, left-to-right and top-to-bottom",
         }
         for step, page in zip(route["steps"], work_pages)
     ]
@@ -224,7 +228,7 @@ def generate_route_package(
 
     format_check = {
         "template_id": HDMI_TEMPLATE_ID,
-        "layout_mode": "portrait_flow_then_repeated_landscape_work_instructions",
+        "layout_mode": OPERATION_SHEET_LAYOUT_MODE,
         "process_flow_pages": 1,
         "work_instruction_pages": len(work_pages),
         "expected_rendered_pages": 1 + len(work_pages),
@@ -610,7 +614,7 @@ def _route_template_pages(
             slot = {
                 "slot_no": slot_no,
                 "image_placeholder": True,
-                "image_label": "图片区（待人工上传确认）",
+                "image_label": "未配图",
                 "text_placeholder": f"{slot_no}. {method}" if method else f"{slot_no}. ",
             }
             if slot_no <= len(step_media):
@@ -664,12 +668,15 @@ def _route_template_pages(
                 },
             }
         else:
-            page["ie_time_study"] = _default_work_ie_time_study(slots)
-            for row in page["ie_time_study"]["rows"]:
-                row["机器型号"] = "待工程确认"
-                row["IE测量方法"] = "待IE现场实测"
-                row.update(ie_timing_values)
-                row["工时来源"] = "待IE实测/人工锁定"
+            page["ie_time_study"] = {
+                "title": "IE工时记录",
+                "fields": list(STEP_IE_ITEM_FIELDS),
+                "rows": [],
+                "policy": {
+                    "measurement_basis": "没有人工填写值时保持空白，不由系统估算现场数据。",
+                    "release_requirement": "human_review_required",
+                },
+            }
         quality_lines = _compact_lines(
             list(step.get("quality_check_json") or []) + list(step.get("acceptance_criteria_json") or []),
             fallback="检查方法与合格判据待质量人员确认。",
@@ -702,6 +709,24 @@ def _route_template_pages(
             {"title": "记录要求（最新）", "lines": record_lines},
             {"title": "输入资料", "lines": input_lines},
         ]
+        page["document_date"] = normalized_date.replace("-", "/").lstrip("0").replace("/0", "/")
+        page["operation_sections"] = {
+            "step_code": str(step.get("step_code") or ""),
+            "action": str(step.get("action") or ""),
+            "why": str(step.get("why") or ""),
+            "methods": methods,
+            "inputs": [str(item) for item in step.get("input_json") or []],
+            "materials": [str(item) for item in step.get("material_json") or []],
+            "equipment": [str(item) for item in step.get("tool_equipment_json") or []],
+            "fixtures": [str(item) for item in step.get("fixture_json") or []],
+            "parameters": [_format_parameter_item(item) for item in step.get("parameter_json") or []],
+            "quality_checks": [str(item) for item in step.get("quality_check_json") or []],
+            "acceptance": [str(item) for item in step.get("acceptance_criteria_json") or []],
+            "safety": [str(item) for item in step.get("safety_json") or []],
+            "exceptions": [str(item) for item in step.get("exception_json") or []],
+            "records": [str(item) for item in step.get("record_output_json") or []],
+            "ie_lines": _manual_ie_lines(step_ie_items, ie_timing_values),
+        }
         work_pages.append(page)
     return flow_page, work_pages
 
@@ -745,6 +770,50 @@ def _route_ie_timing_values(payload: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _manual_ie_lines(
+    items: list[dict[str, Any]],
+    route_values: dict[str, str],
+) -> list[str]:
+    labels = (
+        ("machine_type", "机器类型"),
+        ("equipment_speed", "设备速度"),
+        ("unit_price", "单价"),
+        ("headcount", "人数"),
+        ("standard_time", "标准工时"),
+        ("allowance_rate", "宽放率"),
+        ("standard_capacity", "标准产能"),
+        ("time_source", "工时来源"),
+        ("note", "备注"),
+    )
+    lines: list[str] = []
+    for index, item in enumerate(items[:6], start=1):
+        action = str(item.get("action") or f"项目 {index}").strip()
+        values = [
+            f"{label} {str(item.get(key)).strip()}"
+            for key, label in labels
+            if item.get(key) not in (None, "")
+        ]
+        lines.append(f"{index}. {action}" + (f"｜{'；'.join(values)}" if values else ""))
+    route_summary = [
+        f"{label} {value}"
+        for label, value in route_values.items()
+        if str(value).strip()
+    ]
+    if route_summary and not lines:
+        lines.append("路线人工数据｜" + "；".join(route_summary))
+    return lines
+
+
+def _format_parameter_item(item: Any) -> str:
+    if not isinstance(item, dict):
+        return str(item).strip()
+    name = str(item.get("name") or item.get("parameter") or "参数").strip()
+    value = str(item.get("value") or "").strip()
+    source = str(item.get("source") or "").strip()
+    text = f"{name}：{value}" if value else name
+    return f"{text}（来源：{source}）" if source else text
+
+
 def _route_step_node_type(step: dict[str, Any]) -> str:
     text = " ".join([
         str(step.get("title") or ""),
@@ -781,7 +850,7 @@ def _build_multi_page_document(
             spacer.paragraph_format.space_before = Pt(0)
             spacer.paragraph_format.space_after = Pt(0)
             spacer.paragraph_format.line_spacing = Pt(1)
-        _render_work_instruction_word_table(document, page)
+        render_operation_sheet_v4(document, page)
     return document
 
 
@@ -798,7 +867,6 @@ def _apply_multi_page_delivery_controls(
         raise ValueError(
             f"Unexpected SOP multi-page layout; expected 2 sections and {expected_tables} top-level tables"
         )
-    tables = document.tables
     landscape = document.sections[1]
     uses_enlarged_font_profile = any(
         page.get("font_profile", "standard") != "standard" for page in work_pages
@@ -807,46 +875,20 @@ def _apply_multi_page_delivery_controls(
     landscape.bottom_margin = Cm(0.1 if uses_enlarged_font_profile else 0.3)
     landscape.left_margin = Cm(0.6)
     landscape.right_margin = Cm(0.6)
+    tables = document.tables
     _set_word_cell(tables[0].cell(2, 3), "DRAFT")
     _set_word_cell(tables[0].cell(2, 5), display_date)
     for page_index in range(instruction_page_count):
-        slot_count = _normalize_work_image_slots(work_pages[page_index].get("work_image_slots") or 3)
-        font_profile = work_pages[page_index].get("font_profile", "standard")
-        font_sizes = _work_image_font_sizes(
-            slot_count, font_profile
-        )
         base = 4 + page_index * 4
-        header, body, ie_table, footer = tables[base : base + 4]
-        header_heights = [480, 420, 460] if font_profile != "standard" else [520, 460, 500]
-        for row, height in zip(header.rows, header_heights):
+        header, _, _, footer = tables[base : base + 4]
+        for row, height in zip(header.rows, (500, 420, 440)):
             _set_exact_row_height(row, height)
             for cell in row.cells:
                 _set_word_cell_margins(cell, top=20, start=60, bottom=20, end=60)
         _set_word_cell(header.cell(1, 7), display_date)
         _set_word_cell(header.cell(2, 3), "DRAFT")
-        caption_line_count = _work_image_caption_line_count(
-            list(work_pages[page_index].get("step_slots") or [])
-        )
-        for row, height in zip(body.rows, _work_image_body_row_heights(slot_count, caption_line_count, font_profile)):
-            _set_row_height(row, height)
-        action_row_height = 240 if slot_count <= 3 else 200
-        for row_index in range(len(ie_table.rows)):
-            _set_row_height(
-                ie_table.rows[row_index],
-                260 if row_index < 2 else action_row_height,
-            )
-        _set_exact_row_height(footer.rows[0], 220 if font_profile != "standard" else 240)
-        _set_exact_row_height(footer.rows[1], 250 if font_profile != "standard" else 280)
-        for row_index in range(6):
-            side_cell = body.cell(row_index, 7)
-            side_margin = 70 if font_profile == "standard" else 30
-            _set_word_cell_margins(side_cell, top=30, start=side_margin, bottom=30, end=side_margin)
-            for paragraph in side_cell.paragraphs:
-                for run in paragraph.runs:
-                    run.font.size = Pt(font_sizes["side"])
-        _set_word_cell(footer.cell(1, 3), "材料符合RoHS/REACH；发布前确认。", size=7, align=0)
-        for cell in footer.rows[1].cells:
-            _set_word_cell_margins(cell, top=20, start=60, bottom=20, end=60)
+        _set_exact_row_height(footer.rows[0], 220)
+        _set_exact_row_height(footer.rows[1], 260)
 
 
 def validate_multi_page_document(
@@ -866,30 +908,36 @@ def validate_multi_page_document(
     draft_headers = True
     dates_match = True
     visual_orders = True
-    ie_row_counts_match = True
+    required_sections_present = True
+    ie_area_present = True
     slot_counts = expected_instruction_slots or [3] * expected_instruction_pages
     if len(slot_counts) != expected_instruction_pages:
         raise ValueError("instruction slot count list must match instruction page count")
-    ie_row_counts = expected_instruction_ie_rows or list(slot_counts)
+    ie_row_counts = expected_instruction_ie_rows or [0] * expected_instruction_pages
     if len(ie_row_counts) != expected_instruction_pages:
         raise ValueError("instruction IE row count list must match instruction page count")
     for page_index in range(expected_instruction_pages):
         base = 4 + page_index * 4
         if base + 3 >= len(tables):
-            signoffs_blank = draft_headers = dates_match = visual_orders = ie_row_counts_match = False
+            signoffs_blank = draft_headers = dates_match = visual_orders = False
+            required_sections_present = ie_area_present = False
             break
-        header, body, _, footer = tables[base : base + 4]
-        ie_table = tables[base + 2]
+        header, body, detail_table, footer = tables[base : base + 4]
         slot_count = _normalize_work_image_slots(slot_counts[page_index])
         signoffs_blank = signoffs_blank and [footer.cell(1, index).text.strip() for index in range(3)] == ["", "", ""]
         draft_headers = draft_headers and header.cell(2, 3).text.strip() == "DRAFT"
         dates_match = dates_match and header.cell(1, 7).text.strip() == expected_date
-        expected = [
-            (item["image_row_start"], item["column_start"], str(item["slot_no"]))
-            for item in _work_image_layout(slot_count)
-        ]
-        visual_orders = visual_orders and all(body.cell(row, col).text.strip().startswith(prefix) for row, col, prefix in expected)
-        ie_row_counts_match = ie_row_counts_match and len(ie_table.rows) == 2 + ie_row_counts[page_index]
+        body_text = "\n".join(cell.text for row in body.rows for cell in row.cells)
+        detail_text = "\n".join(cell.text for row in detail_table.rows for cell in row.cells)
+        visual_orders = visual_orders and all(f"{slot_no}." in body_text for slot_no in range(1, slot_count + 1))
+        required_sections_present = required_sections_present and all(
+            title in body_text + "\n" + detail_text
+            for title in (
+                "作业方法", "作业图片", "工艺参数", "检查方法", "合格判据",
+                "安全要求", "异常处理/记录",
+            )
+        )
+        ie_area_present = ie_area_present and "IE 工时（仅显示人工填写值）" in body_text
     checks = {
         "sections": len(document.sections) == 2,
         "top_level_tables": len(tables) == expected_tables,
@@ -900,7 +948,8 @@ def validate_multi_page_document(
         "version_is_draft_every_page": draft_headers,
         "document_date_every_page": dates_match,
         "visual_step_order_every_page": visual_orders,
-        "ie_action_rows_match_work_image_slots": ie_row_counts_match,
+        "operation_sheet_sections_every_page": required_sections_present,
+        "manual_ie_area_every_page": ie_area_present,
         "has_png_media": validation.get("has_png_media") is True,
         "has_no_svg": validation.get("has_svg") is False,
         "has_no_vml": validation.get("has_vml_shape") is False,
@@ -922,7 +971,7 @@ def validate_multi_page_document(
             "instruction_layouts": [
                 {
                     "work_image_slots": count,
-                    "visual_order": _work_image_order_label(count),
+                    "visual_order": "1..N, left-to-right and top-to-bottom",
                 }
                 for count in slot_counts
             ],
