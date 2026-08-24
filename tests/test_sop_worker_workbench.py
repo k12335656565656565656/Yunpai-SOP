@@ -588,6 +588,38 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         )
         self.assertEqual(saved["work_image_slots"], 6)
 
+    def test_page_edit_preserves_quality_item_positions_and_limits(self) -> None:
+        step = self.store.get_route(self.route_id)["steps"][0]
+
+        result = self.store.save_step_page_edit(
+            step["id"],
+            fields={
+                "quality_check": ["核对标签", "测量长度", "检查外观", "执行电测"],
+                "acceptance_criteria": ["标签一致", "长度合格", "", "测试通过"],
+                "tool_equipment": ["扫码枪", "卷尺", "", "测试仪"],
+                "fixtures": ["", "定位治具", "", ""],
+            },
+            ie_items=None,
+            work_image_slots=None,
+            reviewer="quality-editor",
+        )
+
+        self.assertTrue(result["changed"])
+        saved = self.store.get_route(self.route_id)["steps"][0]
+        self.assertEqual(saved["acceptance_criteria_json"], ["标签一致", "长度合格", "", "测试通过"])
+        self.assertEqual(saved["tool_equipment_json"], ["扫码枪", "卷尺", "", "测试仪"])
+        self.assertEqual(saved["fixture_json"], ["", "定位治具", "", ""])
+        self.assertEqual(saved["review_state"], "needs_revision")
+
+        with self.assertRaisesRegex(ValueError, "最多 6"):
+            self.store.save_step_page_edit(
+                step["id"],
+                fields={"quality_check": [f"管制点 {index}" for index in range(7)]},
+                ie_items=None,
+                work_image_slots=None,
+                reviewer="quality-editor",
+            )
+
     def test_page_edit_regenerates_document_only_after_actual_change(self) -> None:
         step = self.store.get_route(self.route_id)["steps"][0]
         documents = Mock()
@@ -842,6 +874,7 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertIn("/media/bindings", MEDIA_ARRANGEMENT_HTML)
         self.assertIn("/api/media/links/${linkId}/confirm", MEDIA_ARRANGEMENT_HTML)
         self.assertIn("每道工序最多绑定 6 张图片", MEDIA_ARRANGEMENT_HTML)
+
         self.assertIn("renderInspectorOrderControls", MEDIA_ARRANGEMENT_HTML)
         self.assertIn("data-move-link", MEDIA_ARRANGEMENT_HTML)
         self.assertNotIn("scrollIntoView", MEDIA_ARRANGEMENT_HTML)
@@ -941,6 +974,22 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertIn("/split/reviewable", simple_html)
         self.assertNotIn("scrollIntoView", simple_html)
         self.assertNotIn("content_json</label>", REVIEW_HTML)
+
+    def test_simple_workbench_exposes_positioned_quality_item_editor(self) -> None:
+        from cad_ai.sop_knowledge.web import SIMPLE_REVIEW_HTML
+
+        for text in (
+            'data-route-action="quality-items"',
+            "function openStepQualityItems",
+            "＋ 新增品质项目",
+            "编辑品质项目",
+            "管制点必须填写",
+            "quality_check:items.map",
+            "acceptance_criteria:items.map",
+            "tool_equipment:items.map",
+            "fixtures:items.map",
+        ):
+            self.assertIn(text, SIMPLE_REVIEW_HTML)
 
 
 if __name__ == "__main__":

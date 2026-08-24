@@ -393,6 +393,43 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             self.assertIn("标准产能 100 条/小时", body_text)
             self.assertIn("2. 检查", body_text)
 
+    def test_route_backed_hdmi_renders_four_positioned_quality_items(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SopKnowledgeStore(root / "knowledge.sqlite3")
+            store.initialize()
+            store.ensure_process_family("test_family", "测试工艺族")
+            identity = make_identity("HDMI-QUALITY-ITEM-TEST")
+            store.upsert_product(identity, {"class": "cable"})
+            route_id = store.create_route(make_route(identity, 1))
+            step = store.get_route(route_id)["steps"][0]
+            store.save_step_page_edit(
+                step["id"],
+                fields={
+                    "quality_check": ["核对标签", "测量长度", "检查外观", "执行电测"],
+                    "acceptance_criteria": ["标签一致", "长度合格", "", "测试通过"],
+                    "tool_equipment": ["扫码枪", "卷尺", "", "测试仪"],
+                    "fixtures": ["", "定位治具", "", ""],
+                },
+                ie_items=None,
+                work_image_slots=None,
+                reviewer="quality-editor",
+            )
+
+            result = generate_route_package(
+                root / "package",
+                document_date="2026-08-25",
+                db_path=store.path,
+                route_id=route_id,
+            )
+            document = Document(result["document_docx"])
+            quality_table = document.tables[6]
+            self.assertEqual(len(quality_table.rows), 6)
+            self.assertEqual(quality_table.cell(5, 1).text.strip(), "执行电测")
+            self.assertEqual(quality_table.cell(5, 3).text.strip(), "测试通过")
+            self.assertEqual(quality_table.cell(5, 11).text.strip(), "测试仪")
+            self.assertEqual(quality_table.cell(3, 11).text.strip(), "卷尺 / 定位治具")
+
     def test_route_backed_hdmi_embeds_only_confirmed_step_media(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

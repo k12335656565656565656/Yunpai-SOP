@@ -225,14 +225,23 @@ def _render_work_images(table: Any, page: dict[str, Any], *, body_size: float) -
 
 
 def _render_quality_area(document: Any, page: dict[str, Any]) -> None:
-    table = document.add_table(rows=5, cols=19)
+    sections = page.get("operation_sections") or {}
+    checks = [str(item) for item in sections.get("quality_checks") or []]
+    acceptance = [str(item) for item in sections.get("acceptance") or []]
+    equipment = [str(item) for item in sections.get("equipment") or []]
+    fixtures = [str(item) for item in sections.get("fixtures") or []]
+    item_count = min(6, max(3, len(checks), len(acceptance), len(equipment), len(fixtures)))
+
+    table = document.add_table(rows=2 + item_count, cols=19)
     _prepare_table(table)
-    for row, height in zip(table.rows, (260, 260, 350, 350, 350)):
-        _set_row_height(row, height)
+    _set_row_height(table.rows[0], 260)
+    _set_row_height(table.rows[1], 260)
+    item_height = 1050 // item_count
+    for row in table.rows[2:]:
+        _set_row_height(row, item_height)
 
     profile = _normalize_font_profile(page.get("font_profile"))
     size = {"standard": 7.5, "clear_large": 8.1, "large": 8.8}[profile]
-    sections = page.get("operation_sections") or {}
     _heading(
         table.cell(0, 0).merge(table.cell(0, _LEFT_LAST_COLUMN)),
         "品质管制点（Quality control point）",
@@ -248,10 +257,7 @@ def _render_quality_area(document: Any, page: dict[str, Any]) -> None:
     _heading(table.cell(1, 3).merge(table.cell(1, 10)), "判定基准", size=8)
     _heading(table.cell(1, 11).merge(table.cell(1, 13)), "使用工具", size=8)
 
-    checks = [str(item) for item in sections.get("quality_checks") or []]
-    acceptance = [str(item) for item in sections.get("acceptance") or []]
-    tools = [str(item) for item in (sections.get("equipment") or []) + (sections.get("fixtures") or [])]
-    for row_offset in range(3):
+    for row_offset in range(item_count):
         row_index = row_offset + 2
         _set_word_cell(table.cell(row_index, 0), str(row_offset + 1), size=size)
         _set_word_cell(
@@ -268,7 +274,7 @@ def _render_quality_area(document: Any, page: dict[str, Any]) -> None:
         )
         _set_word_cell(
             table.cell(row_index, 11).merge(table.cell(row_index, 13)),
-            tools[row_offset] if row_offset < len(tools) else "",
+            _quality_tool_text(equipment, fixtures, row_offset),
             size=size,
             align=WD_ALIGN_PARAGRAPH.LEFT,
         )
@@ -279,12 +285,25 @@ def _render_quality_area(document: Any, page: dict[str, Any]) -> None:
         + [str(item) for item in sections.get("records") or []]
     )
     _set_word_cell(
-        table.cell(1, _RIGHT_FIRST_COLUMN).merge(table.cell(4, _RIGHT_LAST_COLUMN)),
+        table.cell(1, _RIGHT_FIRST_COLUMN).merge(
+            table.cell(item_count + 1, _RIGHT_LAST_COLUMN)
+        ),
         _numbered_lines(caution),
         size=size,
         align=WD_ALIGN_PARAGRAPH.LEFT,
     )
     _compact_table_cells(table)
+
+
+def _quality_tool_text(
+    equipment: list[str], fixtures: list[str], index: int
+) -> str:
+    values = []
+    if index < len(equipment) and equipment[index].strip():
+        values.append(equipment[index].strip())
+    if index < len(fixtures) and fixtures[index].strip():
+        values.append(fixtures[index].strip())
+    return " / ".join(values)
 
 
 def _render_signoff(document: Any) -> None:

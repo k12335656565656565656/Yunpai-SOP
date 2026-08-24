@@ -34,6 +34,9 @@ PAGE_EDITABLE_FIELDS = {
     "parameters", "method", "quality_check", "acceptance_criteria", "safety",
     "record_output", "exception",
 }
+POSITIONED_QUALITY_FIELDS = {
+    "quality_check", "acceptance_criteria", "tool_equipment", "fixtures",
+}
 ROUTE_SECTION_TYPES = (
     "product_identity",
     "bom_material",
@@ -902,6 +905,13 @@ class SopKnowledgeStore:
                     if not any(positioned_methods):
                         raise ValueError("at least one page method caption is required")
                     normalized_fields[field_name] = positioned_methods
+                elif field_name in POSITIONED_QUALITY_FIELDS:
+                    if len(value) > 6:
+                        raise ValueError("每道工序最多 6 个品质项目")
+                    positioned_values = [str(item).strip() for item in value]
+                    if field_name == "quality_check" and any(not item for item in positioned_values):
+                        raise ValueError("品质项目的管制点不能为空")
+                    normalized_fields[field_name] = positioned_values
                 else:
                     normalized_fields[field_name] = [
                         str(item).strip() for item in value if str(item).strip()
@@ -911,6 +921,14 @@ class SopKnowledgeStore:
                 if field_name == "title" and not clean_value:
                     raise ValueError("step title is required")
                 normalized_fields[field_name] = clean_value
+
+        quality_lengths = {
+            len(normalized_fields[field])
+            for field in POSITIONED_QUALITY_FIELDS
+            if field in normalized_fields
+        }
+        if len(quality_lengths) > 1:
+            raise ValueError("品质项目各列行数必须一致")
 
         normalized_ie: list[dict[str, Any]] | None = None
         requested_ids: list[int] = []
