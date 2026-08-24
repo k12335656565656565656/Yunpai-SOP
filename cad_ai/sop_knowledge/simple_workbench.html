@@ -172,7 +172,15 @@
       safety:{x:60,y:74,w:19.1,h:11.3},exception:{x:79.1,y:74,w:18.2,h:5.6},record_output:{x:79.1,y:79.6,w:18.2,h:5.7},
       ie_items:{x:61.9,y:40.8,w:35.4,h:27.4},fallback:{x:2.7,y:1.5,w:94.6,h:88.5}
     };
-    function activeFieldRegions(){return String(documentInfo?.template_id||'').endsWith('.v4')?v4FieldRegions:legacyFieldRegions}
+    const v5FieldRegions={
+      title:{x:73.8,y:17,w:24.2,h:3.2},action:{x:1.7,y:12.8,w:71.7,h:3.4},why:{x:1.7,y:16.2,w:71.7,h:3.4},
+      method:{x:1.7,y:19.6,w:71.7,h:7.2},materials:{x:73.8,y:22,w:24.2,h:6},inputs:{x:73.8,y:28,w:24.2,h:6},
+      tool_equipment:{x:73.8,y:37,w:24.2,h:5.5},fixtures:{x:73.8,y:42.5,w:24.2,h:5.5},parameters:{x:73.8,y:51,w:24.2,h:5},
+      ie_items:{x:73.8,y:58,w:24.2,h:10},quality_check:{x:7,y:72,w:15,h:17},acceptance_criteria:{x:22,w:36,y:72,h:17},
+      safety:{x:73.8,y:72,w:24.2,h:5.7},exception:{x:73.8,y:77.7,w:24.2,h:5.7},record_output:{x:73.8,y:83.4,w:24.2,h:5.6},
+      fallback:{x:1.7,y:1.5,w:96.3,h:92}
+    };
+    function activeFieldRegions(){const id=String(documentInfo?.template_id||'');return id.endsWith('.v5')?v5FieldRegions:id.endsWith('.v4')?v4FieldRegions:legacyFieldRegions}
     const fieldKeysByLabel={'工序名称':'title','工序动作':'action','工序目的':'why','作业步骤':'method','工具、设备':'tool_equipment','治具':'fixtures','材料':'materials','输入资料':'inputs','工艺参数':'parameters','检查方法':'quality_check','合格判据':'acceptance_criteria','安全要求':'safety','记录要求':'record_output','异常处理':'exception'};
     async function api(url,opt={}){const response=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});const type=response.headers.get('content-type')||'';const data=type.includes('json')?await response.json():await response.text();if(!response.ok)throw Error(data.detail||data||response.statusText);return data}
     function renderChatAttachments(){const host=$('chatAttachments');host.replaceChildren();for(const attachment of chatAttachments){const chip=document.createElement('div'),name=document.createElement('span'),remove=document.createElement('button');chip.className='chat-attachment';name.textContent=attachment.name;name.title=attachment.name;remove.type='button';remove.title='移除这张待引用图片';remove.setAttribute('aria-label',`移除 ${attachment.name}`);remove.textContent='×';remove.addEventListener('click',()=>{chatAttachments=chatAttachments.filter(item=>item.assetId!==attachment.assetId);renderChatAttachments()});chip.append(name,remove);host.append(chip)}}
@@ -451,7 +459,26 @@
       {key:'ie_items',label:'IE 项目',x:61.9,y:40.8,w:35.4,h:27.4,action:'ie'},
       {key:'work_image_slots',label:'图片格数',x:2.7,y:29.4,w:10.5,h:5.4,action:'layout'}
     ];
+    const pageEditV5BaseFields=[
+      {key:'title',source:'title',label:'工程名称',x:73.8,y:17,w:24.2,h:3.2,single:true},
+      {key:'version',label:'版本（固定）',x:89.2,y:5.2,w:8.8,h:3.2,readonly:true},
+      {key:'action',source:'action',label:'工序动作',x:1.7,y:12.8,w:71.7,h:3.4,single:true},
+      {key:'why',source:'why',label:'作业目的',x:1.7,y:16.2,w:71.7,h:3.4},
+      {key:'materials',source:'material_json',label:'使用材料',x:73.8,y:22,w:24.2,h:6},
+      {key:'inputs',source:'input_json',label:'输入资料',x:73.8,y:28,w:24.2,h:6},
+      {key:'tool_equipment',source:'tool_equipment_json',label:'设备／工具',x:73.8,y:37,w:24.2,h:5.5},
+      {key:'fixtures',source:'fixture_json',label:'治具',x:73.8,y:42.5,w:24.2,h:5.5},
+      {key:'parameters',source:'parameter_json',label:'工艺参数',x:73.8,y:51,w:24.2,h:5},
+      {key:'quality_check',source:'quality_check_json',label:'管制点',x:7,y:72,w:15,h:17},
+      {key:'acceptance_criteria',source:'acceptance_criteria_json',label:'判定基准',x:22,y:72,w:36,h:17},
+      {key:'safety',source:'safety_json',label:'安全要求',x:73.8,y:72,w:24.2,h:5.7},
+      {key:'exception',source:'exception_json',label:'异常处理',x:73.8,y:77.7,w:24.2,h:5.7},
+      {key:'record_output',source:'record_output_json',label:'记录要求',x:73.8,y:83.4,w:24.2,h:5.6},
+      {key:'ie_items',label:'IE 项目',x:73.8,y:58,w:24.2,h:10,action:'ie'},
+      {key:'work_image_slots',label:'图片格数',x:1.7,y:27,w:10.5,h:5.4,action:'layout'}
+    ];
 
+    function pageEditUsesV5(){return String(documentInfo?.template_id||'').endsWith('.v5')}
     function pageEditUsesV4(){return String(documentInfo?.template_id||'').endsWith('.v4')}
 
     function pageEditSlotCount(step){return Math.max(1,Math.min(6,Number(step?.work_image_slots)||3))}
@@ -477,8 +504,8 @@
       return result
     }
     function pageEditFieldsForStep(step){
-      const slotCount=pageEditSlotCount(step),v4=pageEditUsesV4(),layout=(v4?pageEditMethodLayoutV4(slotCount):pageEditMethodLayout(slotCount)).sort((a,b)=>a.slot-b.slot),imageFields=layout.map(item=>({key:`image_slot_${item.slot}`,label:`工图 ${item.slot}`,action:'image',imageSlot:item.slot,...item})),methodFields=layout.map(item=>({key:`method_slot_${item.slot}`,label:`图片步骤 ${item.slot} 说明`,methodSlot:item.slot,...item})),base=v4?pageEditV4BaseFields:pageEditLegacyBaseFields;
-      return [...base.slice(0,v4?4:3),...imageFields,...methodFields,...base.slice(v4?4:3)]
+      const slotCount=pageEditSlotCount(step),v5=pageEditUsesV5(),v4=pageEditUsesV4(),modern=v5||v4,layout=(modern?pageEditMethodLayoutV4(slotCount):pageEditMethodLayout(slotCount)).sort((a,b)=>a.slot-b.slot),imageFields=layout.map(item=>({key:`image_slot_${item.slot}`,label:`工图 ${item.slot}`,action:'image',imageSlot:item.slot,...item})),methodFields=layout.map(item=>({key:`method_slot_${item.slot}`,label:`图片步骤 ${item.slot} 说明`,methodSlot:item.slot,...item})),base=v5?pageEditV5BaseFields:v4?pageEditV4BaseFields:pageEditLegacyBaseFields;
+      return [...base.slice(0,modern?4:3),...imageFields,...methodFields,...base.slice(modern?4:3)]
     }
 
     const pageEditRegionCache=new WeakMap();
@@ -514,7 +541,8 @@
     }
     function pageEditImageSlotRegions(step,sideRegions,imageLeft,imageRight){const slotCount=pageEditSlotCount(step),imageWidth=imageRight-imageLeft,headerBottom=sideRegions?.[0]?.y||13.5,topCaption=sideRegions?.[2]||{y:31.5,h:6.8},bottomCaption=sideRegions?.[5]||{y:53,h:6.8},regions={};for(const item of pageEditMethodLayout(slotCount)){const caption=item.bodyRow===2?topCaption:bottomCaption,start=item.bodyRow===2||slotCount<=3?headerBottom:topCaption.y+topCaption.h;regions[`image_slot_${item.slot}`]={x:imageLeft+imageWidth*item.column/item.columnCount,y:start,w:imageWidth/item.columnCount,h:Math.max(3,caption.y-start)}}return regions}
     function pageEditRegionsForPageV4(step,fields){const regions={},left=2.7,width=59.1,slotCount=pageEditSlotCount(step);for(const field of fields){if(field.imageSlot||field.methodSlot){const item=pageEditMethodLayoutV4(slotCount).find(candidate=>candidate.slot===Number(field.imageSlot||field.methodSlot));if(!item)continue;const x=left+width*item.column/item.columnCount,w=width/item.columnCount;if(slotCount<=3)regions[field.key]=field.imageSlot?{x,y:34.8,w,h:23.2}:{x,y:58,w,h:10.2};else if(item.row===0)regions[field.key]=field.imageSlot?{x,y:34.8,w,h:12.8}:{x,y:47.6,w,h:5.9};else regions[field.key]=field.imageSlot?{x,y:53.5,w,h:10.9}:{x,y:64.4,w,h:3.8};continue}regions[field.key]={x:field.x,y:field.y,w:field.w,h:field.h}}return regions}
-    function pageEditRegionsForPage(page){const pageNumber=Number(page.dataset.pageNumber),step=pageEditStep(pageNumber),fields=pageEditState?.fields||pageEditFieldsForStep(step);if(pageEditUsesV4())return pageEditRegionsForPageV4(step,fields);const image=page.querySelector('img'),sideRegions=detectSideSectionRegions(image),regions={},imageLeft=14.5,imageRight=sideRegions?.[0]?.x||85.4,imageWidth=imageRight-imageLeft,imageRegions=pageEditImageSlotRegions(step,sideRegions,imageLeft,imageRight);for(const field of fields){if(field.imageSlot){regions[field.key]=imageRegions[field.key];continue}if(field.methodSlot){const fallback=field.bodyRow===2?{y:31.5,h:6.8}:{y:53,h:6.8},row=sideRegions?.[field.bodyRow]||fallback;regions[field.key]={x:imageLeft+imageWidth*field.column/field.columnCount,y:row.y,w:imageWidth/field.columnCount,h:row.h};continue}if(field.action==='ie'){const bodyBottom=sideRegions?.[5]?(sideRegions[5].y+sideRegions[5].h):58.7,ieRows=2+Math.max(1,Math.min(6,Array.isArray(step?.ie_items)&&step.ie_items.length?step.ie_items.length:pageEditSlotCount(step)));regions[field.key]={x:1.5,y:bodyBottom+5.8,w:97,h:ieRows*2.88};continue}regions[field.key]=field.sideIndex!==undefined&&sideRegions?.[field.sideIndex]?sideRegions[field.sideIndex]:{x:field.x,y:field.y,w:field.w,h:field.h}}return regions}
+    function pageEditRegionsForPageV5(step,fields){const regions={},left=1.7,width=71.7,slotCount=pageEditSlotCount(step);for(const field of fields){if(field.imageSlot||field.methodSlot){const item=pageEditMethodLayoutV4(slotCount).find(candidate=>candidate.slot===Number(field.imageSlot||field.methodSlot));if(!item)continue;const x=left+width*item.column/item.columnCount,w=width/item.columnCount;if(slotCount<=3)regions[field.key]=field.imageSlot?{x,y:27,w,h:32}:{x,y:59,w,h:9};else if(item.row===0)regions[field.key]=field.imageSlot?{x,y:27,w,h:15.5}:{x,y:42.5,w,h:4.5};else regions[field.key]=field.imageSlot?{x,y:47,w,h:15.5}:{x,y:62.5,w,h:5.5};continue}regions[field.key]={x:field.x,y:field.y,w:field.w,h:field.h}}return regions}
+    function pageEditRegionsForPage(page){const pageNumber=Number(page.dataset.pageNumber),step=pageEditStep(pageNumber),fields=pageEditState?.fields||pageEditFieldsForStep(step);if(pageEditUsesV5())return pageEditRegionsForPageV5(step,fields);if(pageEditUsesV4())return pageEditRegionsForPageV4(step,fields);const image=page.querySelector('img'),sideRegions=detectSideSectionRegions(image),regions={},imageLeft=14.5,imageRight=sideRegions?.[0]?.x||85.4,imageWidth=imageRight-imageLeft,imageRegions=pageEditImageSlotRegions(step,sideRegions,imageLeft,imageRight);for(const field of fields){if(field.imageSlot){regions[field.key]=imageRegions[field.key];continue}if(field.methodSlot){const fallback=field.bodyRow===2?{y:31.5,h:6.8}:{y:53,h:6.8},row=sideRegions?.[field.bodyRow]||fallback;regions[field.key]={x:imageLeft+imageWidth*field.column/field.columnCount,y:row.y,w:imageWidth/field.columnCount,h:row.h};continue}if(field.action==='ie'){const bodyBottom=sideRegions?.[5]?(sideRegions[5].y+sideRegions[5].h):58.7,ieRows=2+Math.max(1,Math.min(6,Array.isArray(step?.ie_items)&&step.ie_items.length?step.ie_items.length:pageEditSlotCount(step)));regions[field.key]={x:1.5,y:bodyBottom+5.8,w:97,h:ieRows*2.88};continue}regions[field.key]=field.sideIndex!==undefined&&sideRegions?.[field.sideIndex]?sideRegions[field.sideIndex]:{x:field.x,y:field.y,w:field.w,h:field.h}}return regions}
     function pageEditStep(page){return page>1?(routePayload?.steps||[])[page-2]||null:null}
     function pageEditText(step,field){const value=step?.[field.source];if(field.key==='parameters'&&Array.isArray(value))return value.map(item=>typeof item==='object'&&item!==null?`${String(item.name||item.parameter||'参数')}：${String(item.value??'')}`:String(item)).join('\n');if(Array.isArray(value))return value.map(item=>typeof item==='string'?item:JSON.stringify(item)).join('\n');return String(value??'')}
     function pageEditParameters(value,step){const originals=Array.isArray(step?.parameter_json)?step.parameter_json:[];return String(value||'').split(/\n+/).map(item=>item.trim()).filter(Boolean).map((line,index)=>{const split=line.match(/^([^：:]+)[：:]\s*(.*)$/),original=typeof originals[index]==='object'&&originals[index]!==null?originals[index]:{};return {...original,name:(split?.[1]||line).trim(),value:(split?.[2]||'').trim(),source:String(original.source||'页面人工编辑'),status:'needs_revision'}})}

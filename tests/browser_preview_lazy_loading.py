@@ -54,8 +54,8 @@ def document_payload() -> dict[str, object]:
         "media_count": 0,
         "status": "draft_document_generated",
         "preview_source": "generated_docx",
-        "template_id": "yunpai.sop.hdmi-cable.multi-page.v4",
-        "layout_mode": "portrait_flow_then_repeated_landscape_operation_sheet_v4",
+        "template_id": "yunpai.sop.hdmi-cable.multi-page.v5",
+        "layout_mode": "portrait_flow_then_excel_reference_operation_sheet_v5",
         "docx_url": f"/api/routes/1/documents/latest.docx?v={token}",
         "preview_url": f"/api/routes/1/documents/preview.pdf?v={token}",
         "page_urls": [

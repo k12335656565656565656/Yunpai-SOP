@@ -1,7 +1,7 @@
 {
   "schema_version": "2.1",
   "package_id": "yunpai.sop_template.ai_handoff.v3",
-  "template_id": "yunpai.sop.hdmi-cable.multi-page.v4",
+  "template_id": "yunpai.sop.hdmi-cable.multi-page.v5",
   "workspace_root": ".",
   "primary_instruction": "docs/handoff/sop_template_ai_handoff/README_AI_HANDOFF.md",
   "copyable_prompt": "docs/handoff/sop_template_ai_handoff/NEXT_SESSION_PROMPT.md",
@@ -9,7 +9,7 @@
   "required_arguments": ["--route-db", "--route-id", "--document-date", "--out-dir"],
   "layout": {
     "page_1": "A4 portrait complete process flowchart",
-    "following_pages": "A4 landscape detailed operation sheet repeated for every route step",
+    "following_pages": "A4 landscape Excel-reference operation sheet repeated for every route step",
     "rendered_page_formula": "1 + route_step_count",
     "current_hdmi_route_step_count": 17,
     "current_expected_pages": 18,

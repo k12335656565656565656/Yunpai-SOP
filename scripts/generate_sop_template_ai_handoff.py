@@ -18,9 +18,9 @@ from docx.enum.table import WD_ROW_HEIGHT_RULE
 from docx.shared import Cm, Pt, Twips
 
 from cad_ai.sop_agent import SOP_GENERATION_SEQUENCE, _validate_docx_package
-from cad_ai.sop_operation_sheet_v4 import (
+from cad_ai.sop_operation_sheet_v5 import (
     OPERATION_SHEET_LAYOUT_MODE,
-    render_operation_sheet_v4,
+    render_operation_sheet_v5,
 )
 from cad_ai.sop_visual_template import (
     SOP_FLOWCHART_SHAPE_POLICY,
@@ -51,7 +51,7 @@ from cad_ai.sop_visual_template import (
 
 TEMPLATE_ID = "yunpai.sop.usb_c_cable_packaging.two_page.v1"
 FINAL_DOCX_NAME = "SOP完整模板_USB-C数据线包装_草案.docx"
-HDMI_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v4"
+HDMI_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v5"
 HDMI_FINAL_DOCX_NAME = "SOP完整模板_HDMI线制作_草案.docx"
 CENTER_FLOWCHART_NAME = "center_flowchart.png"
 MANIFEST_NAME = "sop_template_manifest.json"
@@ -850,7 +850,7 @@ def _build_multi_page_document(
             spacer.paragraph_format.space_before = Pt(0)
             spacer.paragraph_format.space_after = Pt(0)
             spacer.paragraph_format.line_spacing = Pt(1)
-        render_operation_sheet_v4(document, page)
+        render_operation_sheet_v5(document, page)
     return document
 
 
@@ -881,14 +881,13 @@ def _apply_multi_page_delivery_controls(
     for page_index in range(instruction_page_count):
         base = 4 + page_index * 4
         header, _, _, footer = tables[base : base + 4]
-        for row, height in zip(header.rows, (500, 420, 440)):
+        for row, height in zip(header.rows, (360, 360, 360)):
             _set_exact_row_height(row, height)
             for cell in row.cells:
                 _set_word_cell_margins(cell, top=20, start=60, bottom=20, end=60)
-        _set_word_cell(header.cell(1, 7), display_date)
-        _set_word_cell(header.cell(2, 3), "DRAFT")
-        _set_exact_row_height(footer.rows[0], 220)
-        _set_exact_row_height(footer.rows[1], 260)
+        _set_word_cell(header.cell(1, 17), "DRAFT")
+        _set_word_cell(header.cell(2, 17), display_date)
+        _set_exact_row_height(footer.rows[0], 300)
 
 
 def validate_multi_page_document(
@@ -924,20 +923,22 @@ def validate_multi_page_document(
             break
         header, body, detail_table, footer = tables[base : base + 4]
         slot_count = _normalize_work_image_slots(slot_counts[page_index])
-        signoffs_blank = signoffs_blank and [footer.cell(1, index).text.strip() for index in range(3)] == ["", "", ""]
-        draft_headers = draft_headers and header.cell(2, 3).text.strip() == "DRAFT"
-        dates_match = dates_match and header.cell(1, 7).text.strip() == expected_date
+        signoffs_blank = signoffs_blank and [footer.cell(0, index).text.strip() for index in range(3)] == ["核准：", "审核：", "制表："]
+        draft_headers = draft_headers and header.cell(1, 17).text.strip() == "DRAFT"
+        dates_match = dates_match and header.cell(2, 17).text.strip() == expected_date
         body_text = "\n".join(cell.text for row in body.rows for cell in row.cells)
         detail_text = "\n".join(cell.text for row in detail_table.rows for cell in row.cells)
-        visual_orders = visual_orders and all(f"{slot_no}." in body_text for slot_no in range(1, slot_count + 1))
+        visual_orders = visual_orders and all(f"图 {slot_no}" in body_text for slot_no in range(1, slot_count + 1))
         required_sections_present = required_sections_present and all(
             title in body_text + "\n" + detail_text
             for title in (
-                "作业方法", "作业图片", "工艺参数", "检查方法", "合格判据",
-                "安全要求", "异常处理/记录",
+                "作业方法（Operating method）", "工程名称（Project name）",
+                "使用材料（Use material）", "使用工治具（The use of tooling）",
+                "工艺参数（Process parameter）", "品质管制点（Quality control point）",
+                "注意事项",
             )
         )
-        ie_area_present = ie_area_present and "IE 工时（仅显示人工填写值）" in body_text
+        ie_area_present = ie_area_present and "IE 工时（人工填写）" in body_text
     checks = {
         "sections": len(document.sections) == 2,
         "top_level_tables": len(tables) == expected_tables,

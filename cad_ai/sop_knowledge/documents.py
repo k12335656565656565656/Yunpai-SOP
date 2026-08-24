@@ -19,8 +19,8 @@ CURRENT_PREVIEW_DIR_NAME = "preview-current"
 VERSIONED_PREVIEW_DIR_PREFIX = "preview-version-"
 PREVIEW_PAGE_DPI = 144
 
-MULTI_PAGE_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v4"
-MULTI_PAGE_LAYOUT_MODE = "portrait_flow_then_repeated_landscape_operation_sheet_v4"
+MULTI_PAGE_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v5"
+MULTI_PAGE_LAYOUT_MODE = "portrait_flow_then_excel_reference_operation_sheet_v5"
 MULTI_PAGE_DOCX_NAME = "SOP完整模板_HDMI线制作_草案.docx"
 
 

@@ -11,7 +11,9 @@
 - 图片默认空白，等待人工上传和确认；
 - 文档始终为 `DRAFT`，批准、审核、制作值栏必须为空。
 
-当前模板 ID：`yunpai.sop.hdmi-cable.multi-page.v4`。
+当前模板 ID：`yunpai.sop.hdmi-cable.multi-page.v5`。每张工序页采用客户提供的
+`MINIDP TO DVI 标准作业指导书.xlsx` 分区：左侧作业方法和工图，右侧工程信息、
+材料、工治具、工艺参数和 IE，底部为品质管制点、注意事项和签核。
 
 ## 1. 工作根目录和唯一入口
 
