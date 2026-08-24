@@ -21,10 +21,12 @@ from scripts.generate_sop_template_ai_handoff import (
     MANIFEST_NAME,
     TEMPLATE_ID,
     VALIDATION_NAME,
+    _group_methods_for_slots,
     generate_package,
     generate_route_package,
     validate_document,
 )
+from cad_ai.sop_visual_template import _work_image_body_row_heights
 from cad_ai.sop_knowledge.store import SopKnowledgeStore
 from cad_ai.sop_knowledge.models import RouteSectionDraft
 from cad_ai.sop_knowledge.documents import SopDocumentService
@@ -38,6 +40,16 @@ PNG_1X1 = base64.b64decode(
 
 
 class SopTemplateAiHandoffTests(unittest.TestCase):
+    def test_three_slot_layout_reserves_space_for_complete_signoff_table(self) -> None:
+        heights = _work_image_body_row_heights(3, caption_line_count=2, font_profile="standard")
+        self.assertLessEqual(sum(heights), 3980)
+
+    def test_image_caption_grouping_preserves_explicit_blank_slots(self) -> None:
+        self.assertEqual(
+            _group_methods_for_slots(["准备材料", "", "", "接通设备", "", "记录结果"], 6),
+            ["准备材料", "", "", "接通设备", "", "记录结果"],
+        )
+
     def test_frozen_handoff_entrypoint_generates_exact_two_section_template(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = generate_package(directory, document_date="2026-08-11")
@@ -123,9 +135,15 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             document = Document(result["document_docx"])
             self.assertEqual(len(document.sections), 2)
             self.assertEqual(len(document.tables), 16)
+            first_instruction_header = document.tables[4]
             first_instruction_body = document.tables[5]
             first_instruction_ie = document.tables[6]
             first_instruction_footer = document.tables[7]
+            self.assertAlmostEqual(first_instruction_body.columns[0].width.cm, 1.45, places=1)
+            self.assertAlmostEqual(first_instruction_body.columns[7].width.cm, 5.55, places=1)
+            self.assertGreaterEqual(first_instruction_header.rows[0].height.twips, 520)
+            self.assertGreaterEqual(first_instruction_header.rows[1].height.twips, 460)
+            self.assertGreaterEqual(first_instruction_header.rows[2].height.twips, 500)
             self.assertTrue(
                 all(row.height_rule == WD_ROW_HEIGHT_RULE.AT_LEAST for row in first_instruction_body.rows)
             )
@@ -133,7 +151,7 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
                 all(row.height_rule == WD_ROW_HEIGHT_RULE.AT_LEAST for row in first_instruction_ie.rows)
             )
             self.assertTrue(
-                all(row.height_rule == WD_ROW_HEIGHT_RULE.AT_LEAST for row in first_instruction_footer.rows)
+                all(row.height_rule == WD_ROW_HEIGHT_RULE.EXACTLY for row in first_instruction_footer.rows)
             )
             side_font_sizes = [
                 run.font.size.pt
@@ -231,6 +249,12 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
                 store.update_step_field(
                     steps[-1]["id"], field_name, value, reviewer="layout-tester"
                 )
+            store.update_step_field(
+                steps[-1]["id"],
+                "method",
+                ["准备材料", "", "", "接通设备", "", "记录结果"],
+                reviewer="layout-tester",
+            )
             for slot_count, step in enumerate(steps, start=1):
                 store.set_step_work_image_slots(step["id"], slot_count, reviewer="layout-tester")
             store.set_route_font_profile(route_id, "large", reviewer="layout-tester")
@@ -254,6 +278,9 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             for page_index, slot_count in enumerate(range(1, 7)):
                 body = document.tables[5 + page_index * 4]
                 ie_table = document.tables[6 + page_index * 4]
+                footer = document.tables[7 + page_index * 4]
+                self.assertEqual(footer.rows[0].height_rule, WD_ROW_HEIGHT_RULE.EXACTLY)
+                self.assertEqual(footer.rows[1].height_rule, WD_ROW_HEIGHT_RULE.EXACTLY)
                 for row, column, prefix in expected_positions[slot_count]:
                     self.assertTrue(body.cell(row, column).text.strip().startswith(prefix))
                 self.assertEqual(len(ie_table.rows), 2 + slot_count)
@@ -291,6 +318,12 @@ class SopTemplateAiHandoffTests(unittest.TestCase):
             )
             for method in ("准备物料", "核对方向", "执行作业", "记录结果"):
                 self.assertIn(method, first_body_text)
+
+            six_slot_body = document.tables[5 + 5 * 4]
+            self.assertIn("1. 准备材料", six_slot_body.cell(2, 1).text)
+            self.assertEqual(six_slot_body.cell(2, 3).text.strip(), "2.")
+            self.assertIn("4. 接通设备", six_slot_body.cell(5, 5).text)
+            self.assertIn("6. 记录结果", six_slot_body.cell(5, 1).text)
 
             manifest = json.loads((root / "package" / MANIFEST_NAME).read_text(encoding="utf-8"))
             self.assertEqual(

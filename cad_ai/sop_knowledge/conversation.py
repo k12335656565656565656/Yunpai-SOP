@@ -125,6 +125,11 @@ class SopConversationService:
             )
         if is_font_profile_request(message):
             return self._request_font_profile_selection(route_id, route_payload, message, worker=worker)
+        pending_operation = self._pending_operation(history)
+        if pending_operation is not None:
+            return self._handle_pending_operation(
+                route_id, route_payload, message, worker=worker, pending=pending_operation
+            )
         if len(message) < 2:
             raise ValueError("请直接描述要修改的部分")
 
@@ -210,6 +215,17 @@ class SopConversationService:
                     proposal = self._blocked_target_mismatch(target_resolution)
         proposal["judgement"] = self._text_list(proposal.get("judgement"))
         proposal["warnings"] = self._text_list(proposal.get("warnings"))
+        proposal["operations"] = [
+            item for item in proposal.get("operations", []) if isinstance(item, dict)
+        ][:1]
+        if target_resolution and target_resolution.selected_step_id is not None and proposal["operations"]:
+            operation = proposal["operations"][0]
+            protected_kinds = {
+                "set_image_slots", "replace_ie_items", "split_actions", "split_independent", "merge_steps", "delete_step",
+            }
+            if operation.get("kind") in protected_kinds and int(operation.get("step_id", 0)) != target_resolution.selected_step_id:
+                proposal["operations"] = []
+                proposal["warnings"].append("AI 返回的结构操作没有锁定在已确认工序，本次未执行。")
         if (
             parser_kind in {"deterministic", "deterministic_fallback"}
             and proposal.get("new_steps")
@@ -240,10 +256,21 @@ class SopConversationService:
                 "warnings": warnings,
             }
         if read_only:
-            proposal = {**proposal, "changes": [], "new_steps": [], "section_changes": [], "image_refs": []}
+            proposal = {**proposal, "changes": [], "new_steps": [], "section_changes": [], "image_refs": [], "operations": []}
             if not location_query:
                 proposal["assistant_message"] = "已按只读请求完成说明，未写入 SOP 草稿，也未重新生成 DOCX。"
             proposal.setdefault("judgement", []).append("该请求仅用于查询，系统已阻止任何 SOP 写入。")
+        if proposal.get("operations"):
+            operation = proposal["operations"][0]
+            if operation.get("kind") == "navigate_preview":
+                return self._reply_with_preview_navigation(
+                    route_id, message, operation, parser_kind=parser_kind,
+                    revision_from=revision_from,
+                )
+            return self._request_operation_confirmation(
+                route_id, message, proposal, parser_kind=parser_kind,
+                revision_from=revision_from, target_resolution=target_resolution,
+            )
         has_changes = any(
             proposal.get(key)
             for key in ("changes", "new_steps", "section_changes", "image_refs")
@@ -305,6 +332,210 @@ class SopConversationService:
             "proposal_id": proposal_id,
             "assistant_message_id": assistant_message_id,
             "target_resolution": target_resolution.to_dict() if target_resolution else None,
+        }
+
+    @staticmethod
+    def _pending_operation(history: list[dict[str, Any]]) -> tuple[int, dict[str, Any]] | None:
+        for item in reversed(history):
+            if item.get("role") != "assistant":
+                continue
+            metadata = item.get("metadata_json") or {}
+            if metadata.get("operation_confirmation") != "pending":
+                return None
+            proposal = metadata.get("operation_proposal")
+            if isinstance(proposal, dict) and isinstance(proposal.get("operations"), list):
+                return int(item.get("id", 0)), proposal
+            return None
+        return None
+
+    @staticmethod
+    def _is_operation_confirmation(message: str) -> bool:
+        compact = re.sub(r"\s+", "", message.strip().lower()).strip("。！!，,；;")
+        return compact in {"确认", "确认执行", "确定", "确定执行", "可以执行", "继续执行", "同意执行", "执行"}
+
+    @staticmethod
+    def _is_operation_cancellation(message: str) -> bool:
+        compact = re.sub(r"\s+", "", message.strip().lower()).strip("。！!，,；;")
+        return compact in {"取消", "取消执行", "先不执行", "不执行", "不要执行"}
+
+    def _handle_pending_operation(
+        self,
+        route_id: int,
+        route_payload: dict[str, Any],
+        message: str,
+        *,
+        worker: str,
+        pending: tuple[int, dict[str, Any]],
+    ) -> dict[str, Any]:
+        pending_message_id, proposal = pending
+        self.store.append_chat_message(route_id, "user", message, metadata={"worker": worker, "pending_message_id": pending_message_id})
+        if self._is_operation_cancellation(message):
+            document = self._existing_document(route_id)
+            metadata = {
+                "parser_kind": "operation_cancelled", "summary": "已取消待执行的路线操作。",
+                "judgement": ["没有写入 SOP，也没有重新生成 DOCX。"], "warnings": [], "changes": [],
+                "applied": {"status": "operation_cancelled", "changed": False, "route_id": route_id},
+                "document": document, "docx_regenerated": False, "requires_human_confirmation": True,
+                "revision_from": None, "target_resolution": None, "resolved_pending_message_id": pending_message_id,
+            }
+            assistant_message_id = self.store.append_chat_message(route_id, "assistant", "已取消本次操作，SOP 没有改动。", metadata=metadata)
+            return {"route_id": route_id, "message": "已取消本次操作，SOP 没有改动。", "assistant_message_id": assistant_message_id, **metadata}
+        if not self._is_operation_confirmation(message):
+            document = self._existing_document(route_id)
+            operation = (proposal.get("operations") or [{}])[0]
+            text = f"这项“{self._operation_label(operation)}”还没有执行。确认请回复“确认执行”，放弃请回复“取消”。"
+            metadata = {
+                "parser_kind": "operation_confirmation", "operation_confirmation": "pending", "operation_proposal": proposal,
+                "summary": "等待操作员确认。", "judgement": ["结构操作必须由人工明确确认后执行。"], "warnings": [], "changes": [],
+                "applied": {"status": "awaiting_operation_confirmation", "changed": False, "route_id": route_id},
+                "document": document, "docx_regenerated": False, "requires_human_confirmation": True,
+                "revision_from": None, "target_resolution": None,
+            }
+            assistant_message_id = self.store.append_chat_message(route_id, "assistant", text, metadata=metadata)
+            return {"route_id": route_id, "message": text, "assistant_message_id": assistant_message_id, **metadata}
+        return self._apply_confirmed_operation(route_id, proposal, worker=worker, pending_message_id=pending_message_id)
+
+    def _request_operation_confirmation(
+        self,
+        route_id: int,
+        message: str,
+        proposal: dict[str, Any],
+        *,
+        parser_kind: str,
+        revision_from: int | None,
+        target_resolution: TargetResolution | None,
+    ) -> dict[str, Any]:
+        operation = proposal["operations"][0]
+        document = self._existing_document(route_id)
+        text = f"已识别“{self._operation_label(operation)}”。我会先按现有规则校验影响范围；请回复“确认执行”后再写入 SOP。"
+        metadata = {
+            "parser_kind": "operation_confirmation", "source_parser_kind": parser_kind,
+            "operation_confirmation": "pending", "operation_proposal": proposal,
+            "summary": self._operation_label(operation),
+            "judgement": ["本次是结构或版式操作，确认前不会修改 SOP。"],
+            "warnings": proposal.get("warnings", []), "changes": [],
+            "applied": {"status": "awaiting_operation_confirmation", "changed": False, "route_id": route_id},
+            "document": document, "docx_regenerated": False, "requires_human_confirmation": True,
+            "revision_from": revision_from,
+            "target_resolution": target_resolution.to_dict() if target_resolution else None,
+            "pending_instruction": message,
+        }
+        assistant_message_id = self.store.append_chat_message(route_id, "assistant", text, metadata=metadata)
+        return {
+            "route_id": route_id, "message": text, "parser_kind": "operation_confirmation",
+            "summary": metadata["summary"], "judgement": metadata["judgement"], "warnings": metadata["warnings"],
+            "changes": [], "applied": metadata["applied"], "document": document, "docx_regenerated": False,
+            "requires_human_confirmation": True, "revision_from": revision_from, "proposal_id": None,
+            "assistant_message_id": assistant_message_id, "target_resolution": metadata["target_resolution"],
+            "operation": operation,
+        }
+
+    def _apply_confirmed_operation(
+        self,
+        route_id: int,
+        proposal: dict[str, Any],
+        *,
+        worker: str,
+        pending_message_id: int,
+    ) -> dict[str, Any]:
+        operation = proposal["operations"][0]
+        result = self._execute_operation(route_id, operation, worker=worker)
+        changed = bool(result.get("changed", result.get("status") not in {"unchanged", "already_restored"}))
+        content_changed = any(proposal.get(key) for key in ("changes", "new_steps", "section_changes", "image_refs"))
+        applied: dict[str, Any] = {"status": "operation_applied", "route_id": route_id, "operation": result}
+        proposal_id: int | None = None
+        if content_changed:
+            proposal_id = self.store.create_nl_proposal(route_id, "已确认的组合操作", proposal, parser_kind="llm", requested_by=worker)
+            applied["content"] = self.store.apply_nl_proposal(proposal_id, reviewer=worker)
+            changed = True
+        document = self.documents.generate(route_id) if changed else self.documents.latest(route_id, generate_if_missing=True)
+        changes = self._describe_changes(proposal, applied.get("content", {}), self.store.get_route(route_id))
+        changes.append(self._operation_change_detail(operation, result))
+        response_text = f"已执行“{self._operation_label(operation)}”。所有变动均已标记为待人工核对。"
+        metadata = {
+            "parser_kind": "operation_applied", "summary": self._operation_label(operation),
+            "judgement": ["已通过路线规则校验并写入草稿。"], "warnings": result.get("warnings", []), "changes": changes,
+            "applied": applied, "document": document, "docx_regenerated": changed,
+            "requires_human_confirmation": True, "revision_from": None, "target_resolution": None,
+            "resolved_pending_message_id": pending_message_id, "operation": operation,
+        }
+        assistant_message_id = self.store.append_chat_message(route_id, "assistant", response_text, metadata=metadata)
+        return {
+            "route_id": route_id, "message": response_text, "parser_kind": "operation_applied",
+            "summary": metadata["summary"], "judgement": metadata["judgement"], "warnings": metadata["warnings"],
+            "changes": changes, "applied": applied, "document": document, "docx_regenerated": changed,
+            "requires_human_confirmation": True, "revision_from": None, "proposal_id": proposal_id,
+            "assistant_message_id": assistant_message_id, "target_resolution": None,
+        }
+
+    def _execute_operation(self, route_id: int, operation: dict[str, Any], *, worker: str) -> dict[str, Any]:
+        kind = operation["kind"]
+        step_id = int(operation.get("step_id", 0))
+        if kind == "set_image_slots":
+            return self.store.set_step_work_image_slots(step_id, int(operation["slots"]), reviewer=worker)
+        if kind == "replace_ie_items":
+            return self.store.replace_step_ie_items(step_id, operation["items"], reviewer=worker)
+        if kind == "split_actions":
+            return self.store.split_step_actions(step_id, titles=operation["titles"], reviewer=worker)
+        if kind == "split_independent":
+            return self.store.split_step_independent(step_id, titles=operation["titles"], reviewer=worker)
+        if kind == "merge_steps":
+            return self.store.merge_steps(
+                route_id, step_id, [int(item["step_id"]) for item in operation["source_steps"]],
+                reviewer=worker, title=str(operation["title"]),
+            )
+        if kind == "reorder_steps":
+            return self.store.reorder_steps(route_id, operation["ordered_step_ids"], reviewer=worker)
+        if kind == "delete_step":
+            return self.store.delete_step(step_id, deleted_by=worker)
+        if kind == "restore_last_deletion":
+            recent = self.store.list_recent_step_deletions(route_id, limit=1)
+            if not recent:
+                raise ValueError("24 小时内没有可恢复的删除工序")
+            return self.store.restore_step_deletion(recent[0]["deletion_token"], reviewer=worker)
+        raise ValueError("不支持的对话操作")
+
+    def _reply_with_preview_navigation(
+        self, route_id: int, message: str, operation: dict[str, Any], *, parser_kind: str, revision_from: int | None,
+    ) -> dict[str, Any]:
+        document = self._existing_document(route_id)
+        page = int(operation["page"])
+        count = int(document.get("page_count", 0)) if document else 0
+        if count and page > count:
+            page = count
+        text = f"已定位到第 {page} 页。"
+        metadata = {
+            "parser_kind": "preview_navigation", "source_parser_kind": parser_kind, "summary": text,
+            "judgement": ["这是预览导航，不会修改 SOP 或生成 DOCX。"], "warnings": [], "changes": [],
+            "applied": {"status": "preview_navigation", "changed": False, "route_id": route_id}, "document": document,
+            "docx_regenerated": False, "requires_human_confirmation": False, "revision_from": revision_from,
+            "target_resolution": None, "preview_navigation": {"page": page},
+        }
+        assistant_message_id = self.store.append_chat_message(route_id, "assistant", text, metadata=metadata)
+        return {"route_id": route_id, "message": text, "assistant_message_id": assistant_message_id, **metadata}
+
+    @staticmethod
+    def _operation_label(operation: dict[str, Any]) -> str:
+        labels = {
+            "set_image_slots": f"将{operation.get('step_title', '该工序')}设为 {operation.get('slots')} 格工图",
+            "replace_ie_items": f"更新{operation.get('step_title', '该工序')}的 IE 项目",
+            "split_actions": f"拆分{operation.get('step_title', '该工序')}的作业动作",
+            "split_independent": f"拆分{operation.get('step_title', '该工序')}为独立工序",
+            "merge_steps": f"合并为“{operation.get('title', '')}”",
+            "reorder_steps": "调整工序顺序",
+            "delete_step": f"删除{operation.get('step_title', '该工序')}",
+            "restore_last_deletion": "恢复最近删除的工序",
+            "navigate_preview": f"跳转到第 {operation.get('page')} 页",
+        }
+        return labels.get(str(operation.get("kind")), "路线操作")
+
+    def _operation_change_detail(self, operation: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+        page = int(result.get("page_number") or 1)
+        return {
+            "target": str(result.get("step_title") or operation.get("step_title") or "工艺路线"),
+            "field": "路线操作", "field_key": "route_operation", "change": self._operation_label(operation),
+            "reason": str(operation.get("reason") or "已由操作员确认"), "page_number": page,
+            "location": f"DOCX 第 {page} 页",
         }
 
     @staticmethod

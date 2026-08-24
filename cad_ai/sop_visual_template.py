@@ -1078,8 +1078,12 @@ def _render_work_instruction_word_table(document: Any, page: dict[str, Any]) -> 
     for row, height in zip(body.rows, _work_image_body_row_heights(slot_count, caption_line_count, font_profile)):
         _set_row_height(row, height)
     column_widths = [1.45, 3.45, 3.45, 3.45, 3.45, 3.45, 3.45, 5.55]
-    for row in body.rows:
-        for column, width in enumerate(column_widths):
+    for column, width in enumerate(column_widths):
+        # Setting tcW alone leaves LibreOffice's table grid at eight equal
+        # columns. Update gridCol as well so the narrow vertical label and the
+        # wider operator information panel render at their intended widths.
+        body.columns[column].width = Cm(width)
+        for row in body.rows:
             _set_word_cell_width(row.cells[column], width)
 
     left_label = body.cell(0, 0).merge(body.cell(5, 0))
@@ -1243,7 +1247,9 @@ def _work_image_body_row_heights(
     if count <= 3:
         # Trade unused image space for longer instructions while keeping the
         # complete body, IE rows, and sign-off area on one landscape page.
-        image_height = max(420, (4920 - caption_height - 720 - reserve) // 5)
+        # LibreOffice needs extra space for the second sign-off row. With the
+        # previous budget it moved that row onto a mostly blank extra page.
+        image_height = max(420, (4140 - caption_height - 720 - reserve) // 5)
         return [image_height] * 5 + [caption_height, 280, 280]
     # Keep every layout within the same A4 landscape page budget. Larger
     # minimums make LibreOffice push the footer onto a separate blank page.

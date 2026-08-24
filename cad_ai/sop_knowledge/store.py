@@ -895,6 +895,13 @@ class SopKnowledgeStore:
                     if not all(isinstance(item, dict) for item in value):
                         raise ValueError("parameters must contain objects")
                     normalized_fields[field_name] = value
+                elif field_name == "method":
+                    if len(value) > 6:
+                        raise ValueError("page method can contain at most 6 image captions")
+                    positioned_methods = [str(item).strip() for item in value]
+                    if not any(positioned_methods):
+                        raise ValueError("at least one page method caption is required")
+                    normalized_fields[field_name] = positioned_methods
                 else:
                     normalized_fields[field_name] = [
                         str(item).strip() for item in value if str(item).strip()

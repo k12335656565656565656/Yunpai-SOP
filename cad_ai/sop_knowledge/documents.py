@@ -46,7 +46,11 @@ class SopDocumentService:
             preview_dir = output_dir / CURRENT_PREVIEW_DIR_NAME
             template_dir = output_dir / "template_package"
             output_dir.mkdir(parents=True, exist_ok=True)
-            preview_dir.mkdir(parents=True, exist_ok=True)
+            # Do not reopen an existing preview directory here. On Windows a
+            # stale directory can be locked or have an unreadable ACL; the
+            # publisher below will then safely use a versioned directory.
+            if not preview_dir.exists():
+                preview_dir.mkdir(parents=True, exist_ok=True)
             template_dir.mkdir(parents=True, exist_ok=True)
             rendered = self._generate_template_package(route_id, template_dir)
             docx_path = Path(rendered["document_docx"])
@@ -358,7 +362,7 @@ class SopDocumentService:
             [
                 str(powershell_exe), "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File",
                 str(self.preview_script), "-InputPath", str(docx_path),
-                "-OutputDirectory", str(output_dir),
+                "-OutputDirectory", str(output_dir), "-SkipPageRendering",
             ],
             cwd=self.project_root,
             capture_output=True,

@@ -111,6 +111,35 @@ class NeverCalledAssistant:
         raise AssertionError("ambiguous target must be confirmed before calling the assistant")
 
 
+class ImageLayoutOperationAssistant:
+    def preview(self, instruction: str, route: dict[str, Any], *, history=None):
+        step_id = int(route.get("_locked_target_step_id") or route["steps"][1]["id"])
+        step = next(item for item in route["steps"] if int(item["id"]) == step_id)
+        return ({
+            "assistant_message": "已识别图片格数调整。",
+            "judgement": ["图片版式调整需要人工确认。"],
+            "summary": "将工图改为 2 格。",
+            "changes": [], "new_steps": [], "section_changes": [], "image_refs": [],
+            "operations": [{
+                "kind": "set_image_slots", "step_ref": str(step["id"]), "step_id": step["id"],
+                "step_code": step["step_code"], "step_title": step["title"], "slots": 2,
+                "reason": "用户要求图片更清晰。",
+            }],
+            "warnings": [], "requires_human_confirmation": True,
+        }, "llm")
+
+
+class PreviewNavigationAssistant:
+    def preview(self, instruction: str, route: dict[str, Any], *, history=None):
+        return ({
+            "assistant_message": "已定位到第 3 页。",
+            "judgement": [], "summary": "跳转预览。",
+            "changes": [], "new_steps": [], "section_changes": [], "image_refs": [],
+            "operations": [{"kind": "navigate_preview", "page": 3, "reason": "用户要求查看指定页。"}],
+            "warnings": [], "requires_human_confirmation": False,
+        }, "llm")
+
+
 class FakeDocuments:
     def __init__(self) -> None:
         self.generated: list[int] = []
@@ -201,6 +230,78 @@ class SopConversationalDocxTests(unittest.TestCase):
         self.assertEqual(documents.generated, [self.route_id])
         self.assertIn("未写入 SOP 草稿", result["message"])
         self.assertEqual(self.store.get_route(self.route_id)["steps"][1]["review_state"], "unreviewed")
+
+    def test_conversational_layout_waits_for_text_confirmation_then_regenerates(self) -> None:
+        documents = StableDocuments()
+        service = SopConversationService(
+            self.store, documents, assistant=ImageLayoutOperationAssistant()  # type: ignore[arg-type]
+        )
+
+        pending = service.chat(self.route_id, "把第 2 道工序调整成 2 格工图", worker="worker-01")
+
+        self.assertEqual(pending["parser_kind"], "operation_confirmation")
+        self.assertFalse(pending["docx_regenerated"])
+        self.assertIn("确认执行", pending["message"])
+        self.assertEqual(self.store.get_route(self.route_id)["steps"][1]["work_image_slots"], 3)
+
+        still_pending = service.chat(self.route_id, "先说明影响", worker="worker-01")
+        self.assertEqual(still_pending["parser_kind"], "operation_confirmation")
+        self.assertFalse(still_pending["docx_regenerated"])
+        self.assertEqual(self.store.get_route(self.route_id)["steps"][1]["work_image_slots"], 3)
+
+        applied = service.chat(self.route_id, "确认执行", worker="worker-01")
+
+        self.assertEqual(applied["parser_kind"], "operation_applied")
+        self.assertTrue(applied["docx_regenerated"])
+        self.assertEqual(documents.generated, [self.route_id])
+        self.assertEqual(self.store.get_route(self.route_id)["steps"][1]["work_image_slots"], 2)
+        self.assertEqual(applied["changes"][-1]["field"], "路线操作")
+
+    def test_conversational_preview_navigation_never_mutates_document(self) -> None:
+        documents = StableDocuments()
+        service = SopConversationService(
+            self.store, documents, assistant=PreviewNavigationAssistant()  # type: ignore[arg-type]
+        )
+
+        result = service.chat(self.route_id, "跳到第 3 页", worker="worker-01")
+
+        self.assertEqual(result["parser_kind"], "preview_navigation")
+        self.assertFalse(result["docx_regenerated"])
+        self.assertEqual(result["preview_navigation"], {"page": 3})
+        self.assertEqual(documents.generated, [])
+
+    def test_offline_parser_recognizes_clear_route_actions_without_guessing(self) -> None:
+        assistant = NaturalLanguageSopAssistant(use_llm=False)
+        route = self.store.get_route(self.route_id)
+
+        layout, parser_kind = assistant.preview("把第 2 道工序的工图改成 2 格", route)
+        self.assertEqual(parser_kind, "deterministic")
+        self.assertEqual(layout["operations"], [{
+            "kind": "set_image_slots", "step_ref": str(route["steps"][1]["id"]),
+            "step_id": route["steps"][1]["id"], "step_code": route["steps"][1]["step_code"],
+            "step_title": route["steps"][1]["title"], "slots": 2, "reason": "用户要求调整指导书图片格数",
+        }])
+
+        deletion, _ = assistant.preview("删除第 3 道工序", route)
+        self.assertEqual(deletion["operations"][0]["kind"], "delete_step")
+        self.assertEqual(deletion["operations"][0]["step_id"], route["steps"][2]["id"])
+
+        split, _ = assistant.preview("把第 2 道工序拆成：校对、加工", route)
+        self.assertEqual(split["operations"][0]["kind"], "split_actions")
+        self.assertEqual(split["operations"][0]["titles"], ["校对", "加工"])
+
+        merge, _ = assistant.preview("把第 1 道工序和第 2 道工序合并为前段作业", route)
+        self.assertEqual(merge["operations"][0]["kind"], "merge_steps")
+        self.assertEqual(merge["operations"][0]["step_id"], route["steps"][0]["id"])
+        self.assertEqual(merge["operations"][0]["source_steps"][0]["step_id"], route["steps"][1]["id"])
+
+        navigation, _ = assistant.preview("跳到第 3 页", route)
+        self.assertEqual(navigation["operations"], [{
+            "kind": "navigate_preview", "page": 3, "reason": "用户要求跳转预览页",
+        }])
+
+        unclear, _ = assistant.preview("把这个工序拆开", route)
+        self.assertEqual(unclear["operations"], [])
 
     def test_font_profile_choice_waits_for_confirmation_then_regenerates_once(self) -> None:
         documents = StableDocuments()
@@ -525,6 +626,46 @@ class SopConversationalDocxTests(unittest.TestCase):
         self.assertTrue(published_dir.name.startswith(VERSIONED_PREVIEW_DIR_PREFIX))
         self.assertEqual((published_dir / "new.pdf").read_bytes(), b"new-preview")
         self.assertEqual((current_dir / "old.pdf").read_bytes(), b"old-preview")
+
+    def test_generate_skips_reopening_an_existing_unreadable_preview_directory(self) -> None:
+        documents = SopDocumentService(self.store)
+        route_dir = documents.root / f"route_{self.route_id}"
+        current_dir = route_dir / CURRENT_PREVIEW_DIR_NAME
+        template_dir = route_dir / "template_package"
+        current_dir.mkdir(parents=True)
+        template_dir.mkdir()
+        docx_path = template_dir / "current.docx"
+        docx_path.write_bytes(b"current-docx")
+        page_count = 3
+        versioned_dir = route_dir / f"{VERSIONED_PREVIEW_DIR_PREFIX}test"
+        rendered = {
+            "document_docx": str(docx_path),
+            "template_id": MULTI_PAGE_TEMPLATE_ID,
+            "expected_page_count": page_count,
+            "validation_json": str(template_dir / "validation.json"),
+        }
+        preview = {
+            "pdf_path": str(versioned_dir / "preview.pdf"),
+            "page_paths": [str(versioned_dir / f"page-{index:03d}.png") for index in range(1, page_count + 1)],
+            "page_count": page_count,
+        }
+        real_mkdir = Path.mkdir
+
+        def mkdir_with_unreadable_current(path: Path, *args, **kwargs) -> None:
+            if path == current_dir:
+                raise PermissionError("preview directory cannot be reopened")
+            real_mkdir(path, *args, **kwargs)
+
+        with (
+            patch.object(Path, "mkdir", new=mkdir_with_unreadable_current),
+            patch.object(documents, "_generate_template_package", return_value=rendered),
+            patch.object(documents, "_render_preview", return_value=preview) as render_preview,
+        ):
+            result = documents.generate(self.route_id)
+
+        render_preview.assert_called_once_with(docx_path, current_dir, expected_page_count=page_count)
+        self.assertEqual(result["page_count"], page_count)
+        self.assertIn(VERSIONED_PREVIEW_DIR_PREFIX, json.loads((route_dir / "document_manifest.json").read_text(encoding="utf-8"))["pdf_path"])
 
     def test_latest_returns_persisted_preview_failure_without_retrying(self) -> None:
         documents = SopDocumentService(self.store)

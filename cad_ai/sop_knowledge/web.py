@@ -18,6 +18,12 @@ from .models import ReviewFieldPatch, RouteSectionPatch, RouteStepDraft, StepIeI
 from .conversation import SopConversationService
 from .documents import SopDocumentService
 from .nl_assistant import NaturalLanguageSopAssistant
+from .project_creation import (
+    PROJECT_IMAGE_BYTES_LIMIT,
+    PROJECT_IMAGE_LIMIT,
+    PROJECT_IMAGE_PACKAGE_LIMIT,
+    NaturalLanguageProjectService,
+)
 from .store import SopKnowledgeStore
 
 
@@ -129,6 +135,25 @@ class ChatRequest(BaseModel):
     pending_message_id: int | None = None
 
 
+class ProjectImageRequest(BaseModel):
+    source_id: str
+    original_name: str
+    mime_type: str
+    data_base64: str
+
+
+class ProjectPreviewRequest(BaseModel):
+    description: str
+    previous_draft_id: str | None = None
+    use_ai: bool = True
+    images: list[ProjectImageRequest] = Field(default_factory=list)
+
+
+class ProjectConfirmRequest(BaseModel):
+    draft_id: str
+    worker: str
+
+
 class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
     """Keep the local Windows launcher from sharing a port with stale code."""
 
@@ -148,6 +173,30 @@ def _health_payload(documents: SopDocumentService) -> dict[str, Any]:
         "document_preview": document_preview,
         "assistant": NaturalLanguageSopAssistant().status(),
     }
+
+
+def _decode_project_images(items: list[ProjectImageRequest]) -> list[dict[str, Any]]:
+    if len(items) > PROJECT_IMAGE_LIMIT:
+        raise ValueError(f"一次最多上传 {PROJECT_IMAGE_LIMIT} 张图片。")
+    encoded_limit = ((PROJECT_IMAGE_BYTES_LIMIT + 2) // 3) * 4 + 4
+    package_encoded_limit = ((PROJECT_IMAGE_PACKAGE_LIMIT + 2) // 3) * 4 + PROJECT_IMAGE_LIMIT * 4
+    if sum(len(item.data_base64) for item in items) > package_encoded_limit:
+        raise ValueError("全部项目图片合计不能超过 50MB。")
+    decoded: list[dict[str, Any]] = []
+    for item in items:
+        if len(item.data_base64) > encoded_limit:
+            raise ValueError(f"{item.original_name or '图片'} 超过 10MB。")
+        try:
+            data = base64.b64decode(item.data_base64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError(f"{item.original_name or '图片'} 的数据无效。") from exc
+        decoded.append({
+            "source_id": item.source_id,
+            "original_name": item.original_name,
+            "mime_type": item.mime_type,
+            "data": data,
+        })
+    return decoded
 
 
 def _regenerate_document_after_route_change(
@@ -339,6 +388,7 @@ def create_review_app(db_path: str | Path):
     store.initialize()
     documents = SopDocumentService(store)
     conversation = SopConversationService(store, documents)
+    project_creation = NaturalLanguageProjectService(store, documents)
     app = FastAPI(title="SOP 工艺路线人工审核工作台", version="1.0.0")
 
     def guard(call):
@@ -362,6 +412,19 @@ def create_review_app(db_path: str | Path):
     @app.get("/api/products")
     def products() -> list[dict[str, Any]]:
         return store.list_products()
+
+    @app.post("/api/projects/preview")
+    def preview_project(request: ProjectPreviewRequest) -> dict[str, Any]:
+        return guard(lambda: project_creation.preview(
+            request.description,
+            previous_draft_id=request.previous_draft_id,
+            use_ai=request.use_ai,
+            images=_decode_project_images(request.images),
+        ))
+
+    @app.post("/api/projects/confirm")
+    def confirm_project(request: ProjectConfirmRequest) -> dict[str, Any]:
+        return guard(lambda: project_creation.confirm(request.draft_id, worker=request.worker))
 
     @app.get("/api/routes/{route_id}")
     def route(route_id: int) -> dict[str, Any]:
@@ -675,6 +738,7 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
     store.initialize()
     documents = SopDocumentService(store)
     conversation = SopConversationService(store, documents)
+    project_creation = NaturalLanguageProjectService(store, documents)
 
     class ReviewHandler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
@@ -844,6 +908,19 @@ def create_builtin_server(db_path: str | Path, host: str = "127.0.0.1", port: in
 
         def do_POST(self) -> None:
             body = self._body()
+            if self.path == "/api/projects/preview":
+                request = ProjectPreviewRequest.model_validate(body)
+                self._run(lambda: project_creation.preview(
+                    request.description,
+                    previous_draft_id=request.previous_draft_id,
+                    use_ai=request.use_ai,
+                    images=_decode_project_images(request.images),
+                ))
+                return
+            if self.path == "/api/projects/confirm":
+                request = ProjectConfirmRequest.model_validate(body)
+                self._run(lambda: project_creation.confirm(request.draft_id, worker=request.worker))
+                return
             if match := re.fullmatch(r"/api/routes/(\d+)/chat", self.path):
                 route_id = int(match.group(1))
                 service = conversation

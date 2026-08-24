@@ -35,6 +35,17 @@ SECTION_TYPES = {
     "ie_timing",
     "release_signoff",
 }
+OPERATION_KINDS = {
+    "set_image_slots",
+    "replace_ie_items",
+    "split_actions",
+    "split_independent",
+    "merge_steps",
+    "reorder_steps",
+    "delete_step",
+    "restore_last_deletion",
+    "navigate_preview",
+}
 
 
 class NaturalLanguageSopAssistant:
@@ -102,15 +113,16 @@ class NaturalLanguageSopAssistant:
             else:
                 warnings.append(f"没有找到工序“{ref}”，未自动写入。")
 
-        operations = self._capture_operation_list(text)
+        structural_operations = self._deterministic_structural_operations(text, steps)
+        operation_titles = self._capture_operation_list(text)
         methods = self._capture_list(text, ("对应的作业指导", "对应作业指导", "作业指导", "作业步骤", "操作方法"))
         images = self._capture_list(text, ("对应的图片", "对应图片", "图片", "照片"))
-        if operations:
-            if methods and len(methods) not in {1, len(operations)}:
+        if operation_titles:
+            if methods and len(methods) not in {1, len(operation_titles)}:
                 warnings.append("工序数量与作业指导数量不一致，未能一一对应的内容需要人工核对。")
-            if images and len(images) not in {1, len(operations)}:
+            if images and len(images) not in {1, len(operation_titles)}:
                 warnings.append("工序数量与图片数量不一致，未能一一对应的图片需要人工核对。")
-            for index, title in enumerate(operations):
+            for index, title in enumerate(operation_titles):
                 method = methods[index] if index < len(methods) else (methods[0] if len(methods) == 1 else "")
                 image_ref = images[index] if index < len(images) else (images[0] if len(images) == 1 else "")
                 step = self._match_step(title, steps)
@@ -141,7 +153,7 @@ class NaturalLanguageSopAssistant:
 
         if images and not image_refs and selected:
             image_refs.extend({"step_ref": str(selected["id"]), "reference": item} for item in images)
-        if not changes and not new_steps and not image_refs:
+        if not changes and not new_steps and not image_refs and not structural_operations:
             warnings.append("离线规则未识别出可安全写入的字段；请补充工序名称或编号，或等待 AI 解析。")
         return {
             "assistant_message": "我已按你的描述定位可修改内容；下面的改动会写入待人工核对的 SOP 草稿。",
@@ -150,6 +162,7 @@ class NaturalLanguageSopAssistant:
             "changes": changes,
             "new_steps": new_steps,
             "image_refs": image_refs,
+            "operations": structural_operations,
             "warnings": warnings,
             "requires_human_confirmation": True,
         }
@@ -174,6 +187,8 @@ class NaturalLanguageSopAssistant:
                 "id": item["id"], "step_code": item["step_code"], "sequence_no": item["sequence_no"],
                 "title": item["title"], "action": item.get("action", ""), "why": item.get("why", ""),
                 "review_state": item.get("review_state", ""),
+                "work_image_slots": item.get("work_image_slots", 3),
+                "ie_items": item.get("ie_items", []),
             }
             compact.update({name: item.get(column, []) for name, column in step_fields.items()})
             steps.append(compact)
@@ -194,7 +209,7 @@ class NaturalLanguageSopAssistant:
         system = (
             "你是面向客户的制造 SOP 助手。只输出 JSON，不输出 Markdown。你可以根据上下文判断用户指的是哪道工序、"
             "哪个作业指导内容或哪个路线章节，不要求用户按固定句式填写。"
-            "输出键包括 assistant_message、judgement、changes、new_steps、section_changes、image_refs、summary、warnings。"
+            "输出键包括 assistant_message、judgement、changes、new_steps、section_changes、image_refs、operations、summary、warnings。"
             "面向客户的表达规则：assistant_message 用 1 到 3 句通俗中文先说结论，说明“已改什么”或“还需要确认什么”。"
             "避免长段落、书面腔、学术化解释、重复复述用户原话。严禁出现 route_steps、JSON、step_code、字段名、数据库、"
             "内部 ID、模型提示词、系统规则或推理过程。不要写“我理解您希望”“我会在方法、检查项和验收标准中”等笼统套话。"
@@ -207,6 +222,12 @@ class NaturalLanguageSopAssistant:
             "section_changes元素只能含section_type、patch、reason；section_type只能是"
             + ",".join(sorted(SECTION_TYPES))
             + "，patch是与现有content合并的JSON对象。图片只记录工作人员给出的引用，不虚构文件。"
+            "operations 用于路线结构或版式操作，元素只能含 kind、step_ref、source_step_refs、title、titles、slots、items、page、reason。"
+            "kind 只能是 " + ",".join(sorted(OPERATION_KINDS)) + "。"
+            "set_image_slots 需要 step_ref 和 1 到 6 的 slots；replace_ie_items 需要 step_ref 和完整 items；"
+            "split_actions 或 split_independent 需要 step_ref 和至少两个 titles；merge_steps 需要保留工序 step_ref、并入工序 source_step_refs 和 title；"
+            "reorder_steps 需要完整的 source_step_refs 顺序；delete_step 需要 step_ref；restore_last_deletion 不需要工序；"
+            "navigate_preview 只需要 page。结构操作只是在等待人工确认，绝不声称已经执行。"
             "可以回答关于当前 SOP 的问题；如果用户只是询问，则给出简短直接的 assistant_message，并让所有改动数组为空。"
             "不要补造生产地点、设备型号、质量结论、参数、工时、单价、人数、批准或现场事实。所有写入都是待人工核对的草稿，不能代表批准。"
         )
@@ -359,6 +380,75 @@ class NaturalLanguageSopAssistant:
             reference = str(raw.get("reference", "")).strip()
             if step and reference:
                 image_refs.append({"step_ref": str(step["id"]), "step_id": step["id"], "step_code": step["step_code"], "reference": reference})
+        operations = []
+        for raw in proposal.get("operations", []):
+            if not isinstance(raw, dict):
+                continue
+            kind = str(raw.get("kind", "")).strip()
+            if kind not in OPERATION_KINDS:
+                continue
+            clean_operation: dict[str, Any] = {"kind": kind, "reason": str(raw.get("reason", "自然语言操作请求")).strip()}
+            if kind == "restore_last_deletion":
+                operations.append(clean_operation)
+                continue
+            if kind == "navigate_preview":
+                try:
+                    page = int(raw.get("page", 0))
+                except (TypeError, ValueError):
+                    page = 0
+                if page > 0:
+                    clean_operation["page"] = page
+                    operations.append(clean_operation)
+                continue
+            step = self._match_step(str(raw.get("step_ref", "")), steps)
+            if not step:
+                continue
+            clean_operation.update({
+                "step_ref": str(step["id"]), "step_id": step["id"],
+                "step_code": step["step_code"], "step_title": step["title"],
+            })
+            if kind == "set_image_slots":
+                try:
+                    slots = int(raw.get("slots", 0))
+                except (TypeError, ValueError):
+                    slots = 0
+                if 1 <= slots <= 6:
+                    clean_operation["slots"] = slots
+                    operations.append(clean_operation)
+            elif kind == "replace_ie_items":
+                items = raw.get("items")
+                if isinstance(items, list) and items:
+                    clean_operation["items"] = [item for item in items if isinstance(item, dict)][:6]
+                    operations.append(clean_operation)
+            elif kind in {"split_actions", "split_independent"}:
+                titles = raw.get("titles")
+                if isinstance(titles, list):
+                    clean_titles = [str(item).strip() for item in titles if str(item).strip()]
+                    if len(clean_titles) >= 2:
+                        clean_operation["titles"] = clean_titles
+                        operations.append(clean_operation)
+            elif kind == "merge_steps":
+                source_steps = []
+                for reference in raw.get("source_step_refs", []):
+                    source = self._match_step(str(reference), steps)
+                    if source and int(source["id"]) != int(step["id"]):
+                        source_steps.append({"step_id": source["id"], "step_code": source["step_code"], "title": source["title"]})
+                title = str(raw.get("title", "")).strip()
+                if source_steps and title:
+                    clean_operation["source_steps"] = source_steps
+                    clean_operation["title"] = title
+                    operations.append(clean_operation)
+            elif kind == "reorder_steps":
+                order = []
+                for reference in raw.get("source_step_refs", []):
+                    item = self._match_step(str(reference), steps)
+                    if item and int(item["id"]) not in order:
+                        order.append(int(item["id"]))
+                if len(order) == len(steps):
+                    clean_operation["ordered_step_ids"] = order
+                    operations.append(clean_operation)
+            elif kind == "delete_step":
+                operations.append(clean_operation)
         return {
             "assistant_message": str(proposal.get("assistant_message") or "我已识别这次请求，并整理为可审核的 SOP 草稿修改。"),
             "judgement": self._text_list(proposal.get("judgement")),
@@ -367,6 +457,7 @@ class NaturalLanguageSopAssistant:
             "new_steps": new_steps,
             "section_changes": section_changes,
             "image_refs": image_refs,
+            "operations": operations,
             "warnings": self._text_list(proposal.get("warnings")),
             "requires_human_confirmation": True,
         }
@@ -422,6 +513,105 @@ class NaturalLanguageSopAssistant:
         if not declared and not explicit_add:
             return []
         return cls._capture_list(text, ("工序", "流程", "步骤"))
+
+    @classmethod
+    def _deterministic_structural_operations(
+        cls, text: str, steps: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Recognize only unambiguous, low-ambiguity route actions without an LLM.
+
+        This is deliberately narrow.  A partial match is safer as a question than as a
+        route mutation, so every action below carries enough information for the same
+        sanitizer and confirmation flow used by an LLM response.
+        """
+        compact = re.sub(r"\s+", "", text)
+        if not compact:
+            return []
+
+        page_match = re.search(r"(?:跳到|跳转到|定位到|查看)第?(\d+)页", compact)
+        if page_match:
+            return [{"kind": "navigate_preview", "page": int(page_match.group(1)), "reason": "用户要求跳转预览页"}]
+
+        if re.search(r"(?:恢复|撤销).{0,8}(?:最近)?删除", compact):
+            return [{"kind": "restore_last_deletion", "reason": "用户要求恢复最近删除的工序"}]
+
+        target = cls._operation_target(text, steps)
+        if not target:
+            return []
+        target_ref = str(target["id"])
+
+        slot_match = re.search(r"(?:工图|图片|图示).{0,12}?([1-6])\s*(?:格|张)", compact)
+        if slot_match and re.search(r"(?:改|调|设|用|变).{0,8}(?:成|为|到)?", compact):
+            return [{
+                "kind": "set_image_slots", "step_ref": target_ref,
+                "slots": int(slot_match.group(1)), "reason": "用户要求调整指导书图片格数",
+            }]
+
+        if re.search(r"(?:删除|删掉|移除).{0,12}(?:工序|步骤)", compact):
+            return [{"kind": "delete_step", "step_ref": target_ref, "reason": "用户要求删除该工序"}]
+
+        merge_match = re.search(r"把?(.+?)(?:和|与)(.+?)(?:合并为|合并成)(.+)$", compact)
+        if merge_match:
+            target_step = cls._operation_step_reference(merge_match.group(1), steps)
+            source_step = cls._operation_step_reference(merge_match.group(2), steps)
+            title = merge_match.group(3).strip("。；;，,")
+            if target_step and source_step and target_step["id"] != source_step["id"] and title:
+                return [{
+                    "kind": "merge_steps", "step_ref": str(target_step["id"]),
+                    "source_step_refs": [str(source_step["id"])], "title": title,
+                    "reason": "用户要求合并两道工序",
+                }]
+
+        reorder_match = re.search(r"(?:工序)?(?:顺序|排序).{0,8}?(?:改为|调整为|设为|：|:)(.+)$", text)
+        if reorder_match:
+            references = cls._operation_titles(reorder_match.group(1))
+            ordered = [cls._operation_step_reference(reference, steps) for reference in references]
+            if len(ordered) == len(steps) and all(ordered) and len({item["id"] for item in ordered if item}) == len(steps):
+                return [{
+                    "kind": "reorder_steps", "step_ref": target_ref,
+                    "source_step_refs": [str(item["id"]) for item in ordered if item],
+                    "reason": "用户提供了完整的工序顺序",
+                }]
+
+        split_match = re.search(r"(?:拆分为|拆分成|拆成)\s*[：:]\s*(.+)$", text)
+        if split_match and re.search(r"(?:拆分|拆成)", compact):
+            titles = cls._operation_titles(split_match.group(1))
+            if len(titles) >= 2:
+                kind = "split_independent" if re.search(r"(?:独立工序|多道工序|独立步骤)", compact) else "split_actions"
+                return [{
+                    "kind": kind, "step_ref": target_ref, "titles": titles,
+                    "reason": "用户提供了明确的拆分内容",
+                }]
+        return []
+
+    @classmethod
+    def _operation_target(cls, text: str, steps: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Resolve a structural command by title/code or the familiar '第 N 道工序' form."""
+        compact = re.sub(r"\s+", "", text).lower()
+        numbered = re.search(r"第?(\d+)\s*(?:道|个)?(?:工序|步骤)", compact)
+        if numbered:
+            sequence = int(numbered.group(1))
+            if 1 <= sequence <= len(steps):
+                return steps[sequence - 1]
+        for item in steps:
+            title = str(item.get("title", "")).strip().lower()
+            code = str(item.get("step_code", "")).strip().lower()
+            if (title and title in compact) or (code and code in compact):
+                return item
+        return cls._selected_step(text, steps)
+
+    @classmethod
+    def _operation_step_reference(cls, reference: str, steps: list[dict[str, Any]]) -> dict[str, Any] | None:
+        numbered = re.search(r"第?\s*(\d+)\s*(?:道|个)?\s*(?:工序|步骤)?", reference)
+        if numbered:
+            sequence = int(numbered.group(1))
+            if 1 <= sequence <= len(steps):
+                return steps[sequence - 1]
+        return cls._match_step(reference.replace("工序", "").replace("步骤", ""), steps)
+
+    @staticmethod
+    def _operation_titles(value: str) -> list[str]:
+        return [item.strip() for item in re.split(r"[、,，;；\n]+", value.strip("。；;，, ")) if item.strip()]
 
     @staticmethod
     def _split_items(value: str) -> list[str]:

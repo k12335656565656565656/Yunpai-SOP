@@ -601,7 +601,7 @@ def _route_template_pages(
     work_pages: list[dict[str, Any]] = []
     for page_no, step in enumerate(steps, start=1):
         slot_count = _normalize_work_image_slots(step.get("work_image_slots") or 3)
-        methods = [str(item).strip() for item in step.get("method_json", []) if str(item).strip()]
+        methods = [str(item).strip() for item in step.get("method_json", [])]
         method_groups = _group_methods_for_slots(methods, slot_count)
         step_media = confirmed_media_by_step.get(int(step["id"]), [])[:slot_count]
         slots = []
@@ -712,7 +712,12 @@ def _group_methods_for_slots(methods: list[str], slot_count: int) -> list[str]:
     groups = ["" for _ in range(count)]
     if not methods:
         return groups
+    if len(methods) <= count:
+        groups[:len(methods)] = methods
+        return groups
     for index, method in enumerate(methods):
+        if not method:
+            continue
         group_index = index if len(methods) <= count else min(index * count // len(methods), count - 1)
         prefix = f"（{index + 1}）" if len(methods) > count else ""
         text = prefix + method
@@ -812,7 +817,7 @@ def _apply_multi_page_delivery_controls(
         )
         base = 4 + page_index * 4
         header, body, ie_table, footer = tables[base : base + 4]
-        header_heights = [400, 300, 420] if font_profile != "standard" else [440, 340, 460]
+        header_heights = [480, 420, 460] if font_profile != "standard" else [520, 460, 500]
         for row, height in zip(header.rows, header_heights):
             _set_exact_row_height(row, height)
             for cell in row.cells:
@@ -830,8 +835,8 @@ def _apply_multi_page_delivery_controls(
                 ie_table.rows[row_index],
                 260 if row_index < 2 else action_row_height,
             )
-        _set_row_height(footer.rows[0], 220 if font_profile != "standard" else 240)
-        _set_row_height(footer.rows[1], 250 if font_profile != "standard" else 280)
+        _set_exact_row_height(footer.rows[0], 220 if font_profile != "standard" else 240)
+        _set_exact_row_height(footer.rows[1], 250 if font_profile != "standard" else 280)
         for row_index in range(6):
             side_cell = body.cell(row_index, 7)
             side_margin = 70 if font_profile == "standard" else 30

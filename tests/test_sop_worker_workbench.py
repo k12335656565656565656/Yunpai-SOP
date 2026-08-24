@@ -549,6 +549,25 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertEqual({row["field_name"] for row in decisions[:2]}, {"method", "safety"})
         self.assertTrue(all(row["decision"] == "needs_revision" for row in decisions[:2]))
 
+    def test_page_edit_preserves_each_image_caption_position(self) -> None:
+        step = self.store.get_route(self.route_id)["steps"][0]
+
+        result = self.store.save_step_page_edit(
+            step["id"],
+            fields={"method": ["准备材料", "", "", "接通设备", "", "记录结果"]},
+            ie_items=None,
+            work_image_slots=6,
+            reviewer="page-editor",
+        )
+
+        self.assertTrue(result["changed"])
+        saved = self.store.get_route(self.route_id)["steps"][0]
+        self.assertEqual(
+            saved["method_json"],
+            ["准备材料", "", "", "接通设备", "", "记录结果"],
+        )
+        self.assertEqual(saved["work_image_slots"], 6)
+
     def test_page_edit_regenerates_document_only_after_actual_change(self) -> None:
         step = self.store.get_route(self.route_id)["steps"][0]
         documents = Mock()
@@ -874,6 +893,24 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertIn("if(pageEditState)return {page:currentPreviewPage", simple_html)
         self.assertIn("detectSideSectionRegions", simple_html)
         self.assertIn("pageEditRegionsForPage", simple_html)
+        self.assertIn("pageEditMethodLayout", simple_html)
+        self.assertIn("图片步骤 1–6 可分别修改", simple_html)
+        self.assertIn("{key:'title',source:'title',label:'工站',x:14.5,y:8.9,w:11.8,h:4.5,single:true}", simple_html)
+        self.assertIn("{key:'version',label:'版本（固定）',x:38.2,y:8.9,w:11.8,h:4.5,readonly:true}", simple_html)
+        self.assertIn("{key:'action',source:'action',label:'作业顺序',x:61.8,y:8.9,w:35.4,h:4.5,single:true}", simple_html)
+        self.assertIn('id="pageEditImageInput"', simple_html)
+        self.assertIn('accept="image/png,image/jpeg"', simple_html)
+        self.assertIn("pageEditImageSlotRegions", simple_html)
+        self.assertIn("column:item.column,columnCount:item.columnCount", simple_html)
+        self.assertIn("imageLeft=14.5", simple_html)
+        self.assertIn("uploadPageEditImage", simple_html)
+        self.assertIn("openPageEditImageReview", simple_html)
+        self.assertIn("/api/routes/${routeId}/media", simple_html)
+        self.assertIn("/api/routes/${routeId}/media/bindings", simple_html)
+        self.assertIn("/api/media/links/${linkId}/confirm", simple_html)
+        self.assertIn("确认并更新 DOCX", simple_html)
+        self.assertIn("版本固定为 DRAFT", simple_html)
+        self.assertNotIn("label:'图片步骤说明',x:13,y:60.5", simple_html)
         self.assertNotIn("x:87.5,y:17,w:11,h:12", simple_html)
         self.assertIn("createRouteRevision", simple_html)
         self.assertIn("/steps/reviewable", simple_html)
