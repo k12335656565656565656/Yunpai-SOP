@@ -124,6 +124,26 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertEqual(parser_kind, "llm")
         self.assertEqual(preview.call_count, 2)
 
+    def test_ai_preview_uses_shared_provider_wire_adapter(self) -> None:
+        route = self.store.get_route(self.route_id)
+        assistant = NaturalLanguageSopAssistant(use_llm=True, timeout=7)
+        config = {
+            "api_key": "test", "base_url": "https://example.test/v1", "model": "test",
+            "wire_api": "responses", "reasoning_effort": "xhigh", "disable_response_storage": True,
+        }
+        expected = {
+            "assistant_message": "已理解。", "judgement": [], "summary": "未修改。",
+            "changes": [], "new_steps": [], "section_changes": [], "image_refs": [],
+            "operations": [], "warnings": [],
+        }
+
+        with patch("cad_ai.sop_knowledge.nl_assistant.request_json_object", return_value=expected) as request:
+            result = assistant._llm_preview("只查看第 1 道工序", route, config, history=[])
+
+        self.assertEqual(result, expected)
+        self.assertEqual(request.call_args.kwargs["config"], config)
+        self.assertEqual(request.call_args.kwargs["timeout"], 7)
+
     def test_ai_prompt_requires_plain_customer_facing_language(self) -> None:
         source = Path(NaturalLanguageSopAssistant.__module__.replace(".", "/") + ".py")
         if not source.is_file():
