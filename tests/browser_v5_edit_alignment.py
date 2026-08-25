@@ -41,11 +41,18 @@ def main() -> None:
 
         two_slots = regions_for_slot_count(page, 2)
         six_slots = regions_for_slot_count(page, 6)
+        v5_field_keys = page.evaluate(
+            "() => pageEditFieldsForStep(pageEditStep(2)).map(field => field.key)"
+        )
+        parsed_method = page.evaluate(
+            """() => pageEditParseOperatingMethod(
+                '工序动作：检查材料。\\n作业目的：确认来料正确。\\n1. 核对标签\\n3. 检查外观'
+            )"""
+        )
         browser.close()
 
     expected_common = {
-        "action": {"x": 2.68, "y": 15.2, "w": 65.36, "h": 3.8},
-        "why": {"x": 2.68, "y": 19.0, "w": 65.36, "h": 3.8},
+        "operating_method": {"x": 2.68, "y": 15.2, "w": 65.36, "h": 15.8},
         "materials": {"x": 68.04, "y": 27.2, "w": 29.58, "h": 4.4},
         "inputs": {"x": 68.04, "y": 31.6, "w": 29.58, "h": 4.4},
         "tool_equipment": {"x": 68.04, "y": 40.0, "w": 29.58, "h": 4.1},
@@ -57,6 +64,17 @@ def main() -> None:
     }
     for key, expected in expected_common.items():
         assert_region(two_slots[key], expected, key)
+
+    assert "action" not in two_slots
+    assert "why" not in two_slots
+    assert "operating_method" in v5_field_keys
+    assert "action" not in v5_field_keys
+    assert "why" not in v5_field_keys
+    assert parsed_method == {
+        "action": "检查材料。",
+        "why": "确认来料正确。",
+        "method": ["核对标签", "", "检查外观"],
+    }
 
     assert_region(
         two_slots["image_slot_1"],

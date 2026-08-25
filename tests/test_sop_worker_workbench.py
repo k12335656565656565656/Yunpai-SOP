@@ -975,6 +975,25 @@ class SopWorkerWorkbenchTests(unittest.TestCase):
         self.assertNotIn("scrollIntoView", simple_html)
         self.assertNotIn("content_json</label>", REVIEW_HTML)
 
+    def test_v5_page_editor_uses_one_operating_method_region(self) -> None:
+        from cad_ai.sop_knowledge.web import SIMPLE_REVIEW_HTML
+
+        self.assertIn(
+            "{key:'operating_method',label:'作业方法',x:2.68,y:15.2,w:65.36,h:15.8,composite:'operating_method'}",
+            SIMPLE_REVIEW_HTML,
+        )
+        self.assertIn("function pageEditOperatingMethod", SIMPLE_REVIEW_HTML)
+        self.assertIn("function pageEditParseOperatingMethod", SIMPLE_REVIEW_HTML)
+        self.assertIn("operatingChanged", SIMPLE_REVIEW_HTML)
+        self.assertNotIn(
+            "{key:'action',source:'action',label:'工序动作',x:2.68",
+            SIMPLE_REVIEW_HTML,
+        )
+        self.assertNotIn(
+            "{key:'why',source:'why',label:'作业目的',x:2.68",
+            SIMPLE_REVIEW_HTML,
+        )
+
     def test_simple_workbench_exposes_positioned_quality_item_editor(self) -> None:
         from cad_ai.sop_knowledge.web import SIMPLE_REVIEW_HTML
 
