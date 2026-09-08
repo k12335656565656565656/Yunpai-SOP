@@ -374,7 +374,11 @@ class SopDocumentService:
         if result.returncode != 0:
             raise RuntimeError(
                 "DOCX was generated, but preview conversion failed: "
-                + (result.stderr.strip() or "Word/LibreOffice conversion is unavailable")
+                + (
+                    result.stderr.strip()
+                    or result.stdout.strip()
+                    or "Word/LibreOffice conversion is unavailable"
+                )
             )
         try:
             json.loads(result.stdout)

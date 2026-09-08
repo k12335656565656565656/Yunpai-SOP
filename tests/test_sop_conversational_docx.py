@@ -576,6 +576,32 @@ class SopConversationalDocxTests(unittest.TestCase):
         with Image.open(page_paths[0]) as preview_page:
             self.assertGreaterEqual(preview_page.width, 1100)
 
+    def test_windows_preview_script_produces_pdf_when_available(self) -> None:
+        if not sys.platform.startswith("win"):
+            self.skipTest("Windows preview wrapper is only available on Windows")
+        from docx import Document
+
+        documents = SopDocumentService(self.store)
+        if documents._windows_powershell_executable() is None:
+            self.skipTest("Windows PowerShell is not installed in this environment")
+        if documents._find_libreoffice_executable() is None:
+            self.skipTest("LibreOffice is not installed in this environment")
+
+        fixture_dir = Path(self.temp.name) / "windows-preview"
+        output_dir = fixture_dir / "rendered"
+        fixture_dir.mkdir(parents=True)
+        docx_path = fixture_dir / "source.docx"
+        document = Document()
+        document.add_heading("SOP preview readiness", level=1)
+        document.add_paragraph("The Windows wrapper must publish a readable PDF.")
+        document.save(docx_path)
+
+        pdf_path = documents._convert_docx_with_windows(docx_path, output_dir)
+
+        self.assertTrue(pdf_path.is_file())
+        self.assertGreater(pdf_path.stat().st_size, 0)
+        self.assertEqual(pdf_path.suffix.lower(), ".pdf")
+
     def test_preview_failure_keeps_existing_pdf_and_pages(self) -> None:
         documents = SopDocumentService(self.store)
         output_dir = documents.root / f"route_{self.route_id}" / "preview"
