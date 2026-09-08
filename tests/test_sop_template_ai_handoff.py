@@ -22,6 +22,7 @@ from scripts.generate_sop_template_ai_handoff import (
     TEMPLATE_ID,
     VALIDATION_NAME,
     _group_methods_for_slots,
+    generate_current_default_package,
     generate_package,
     generate_route_package,
     validate_document,
@@ -40,6 +41,25 @@ PNG_1X1 = base64.b64decode(
 
 
 class SopTemplateAiHandoffTests(unittest.TestCase):
+    def test_default_cli_package_uses_current_v5_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = generate_current_default_package(directory, document_date="2026-09-08")
+            document = Document(result["document_docx"])
+            self.assertEqual(result["template_id"], HDMI_TEMPLATE_ID)
+            self.assertTrue(result["structural_pass"])
+            self.assertEqual(result["expected_page_count"], 2)
+            self.assertEqual(len(document.sections), 2)
+            self.assertEqual(len(document.tables), 8)
+            body_text = "\n".join(
+                cell.text for row in document.tables[5].rows for cell in row.cells
+            )
+            self.assertIn("Operating method", body_text)
+            self.assertIn("Project No", body_text)
+            self.assertIn("IE", body_text)
+            self.assertIn("Quality control", "\n".join(
+                cell.text for row in document.tables[6].rows for cell in row.cells
+            ))
+
     def test_three_slot_layout_reserves_space_for_complete_signoff_table(self) -> None:
         heights = _work_image_body_row_heights(3, caption_line_count=2, font_profile="standard")
         self.assertLessEqual(sum(heights), 3980)

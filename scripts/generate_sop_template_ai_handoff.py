@@ -54,6 +54,8 @@ FINAL_DOCX_NAME = "SOP完整模板_USB-C数据线包装_草案.docx"
 HDMI_TEMPLATE_ID = "yunpai.sop.hdmi-cable.multi-page.v5"
 HDMI_FINAL_DOCX_NAME = "SOP完整模板_HDMI线制作_草案.docx"
 CENTER_FLOWCHART_NAME = "center_flowchart.png"
+CURRENT_DEFAULT_TEMPLATE_ID = HDMI_TEMPLATE_ID
+CURRENT_DEFAULT_DOCX_NAME = "SOP_current_default_v5.docx"
 MANIFEST_NAME = "sop_template_manifest.json"
 FORMAT_CHECK_NAME = "sop_template_format_check.json"
 VALIDATION_NAME = "sop_template_validation.json"
@@ -160,6 +162,184 @@ def generate_package(
         "structural_pass": True,
         "visual_qa_required": True,
     }
+
+
+def generate_current_default_package(
+    out_dir: str | Path,
+    *,
+    document_date: str,
+) -> dict[str, Any]:
+    """Generate the current v5 layout for the no-database CLI path.
+
+    The legacy ``generate_package`` API remains available for compatibility;
+    this is the default handoff shown to users and must match route preview.
+    """
+    normalized_date = _normalize_date(document_date)
+    display_date = normalized_date.replace("-", "/").lstrip("0").replace("/0", "/")
+    output = Path(out_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    expected_names = {
+        CURRENT_DEFAULT_DOCX_NAME,
+        CENTER_FLOWCHART_NAME,
+        MANIFEST_NAME,
+        FORMAT_CHECK_NAME,
+        VALIDATION_NAME,
+    }
+    unexpected_names = {path.name for path in output.iterdir()} - expected_names
+    if unexpected_names:
+        raise RuntimeError(
+            "Output directory contains files outside the handoff contract: "
+            + ", ".join(sorted(unexpected_names))
+        )
+
+    demo = build_usb_cable_packaging_demo()
+    flow_page = demo["process_flow"]
+    work_page = _adapt_demo_work_page_to_v5(demo["work_instruction"], display_date)
+    flow_page["render_center_flowchart"] = True
+    flow_page["center_flowchart_style"] = "pdf_reference_shape_blocks"
+    center_flowchart = output / CENTER_FLOWCHART_NAME
+    center_flowchart.write_bytes(_render_center_flowchart_shape_image(flow_page))
+
+    document = _build_multi_page_document(flow_page, [work_page])
+    _apply_multi_page_delivery_controls(
+        document,
+        work_pages=[work_page],
+        normalized_date=normalized_date,
+        display_date=display_date,
+    )
+    document_path = output / CURRENT_DEFAULT_DOCX_NAME
+    document.save(document_path)
+    validation = validate_multi_page_document(
+        document_path,
+        expected_date=display_date,
+        expected_instruction_pages=1,
+        expected_instruction_slots=[work_page["work_image_slots"]],
+        expected_instruction_ie_rows=[len(work_page["ie_time_study"]["rows"])],
+    )
+    validation_path = output / VALIDATION_NAME
+    validation_path.write_text(json.dumps(validation, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    format_check = {
+        "template_id": CURRENT_DEFAULT_TEMPLATE_ID,
+        "layout_mode": OPERATION_SHEET_LAYOUT_MODE,
+        "process_flow_pages": 1,
+        "work_instruction_pages": 1,
+        "expected_rendered_pages": 2,
+        "tables_per_flow_page": 4,
+        "tables_per_instruction_page": 4,
+        "work_image_layout": "per_step_1_to_6",
+        "images": "embed_confirmed_step_media_and_leave_unbound_slots_blank",
+        "status": "demo_not_for_release",
+    }
+    format_check_path = output / FORMAT_CHECK_NAME
+    format_check_path.write_text(json.dumps(format_check, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest = {
+        "schema_version": "1.1",
+        "template_id": CURRENT_DEFAULT_TEMPLATE_ID,
+        "status": "demo_not_for_release",
+        "document_date": normalized_date,
+        "single_allowed_entrypoint": "python scripts/generate_sop_template_ai_handoff.py",
+        "source_modules": [
+            "cad_ai/sop_operation_sheet_v5.py",
+            "cad_ai/sop_visual_template.py",
+        ],
+        "layout": {
+            "first_page": "A4 portrait process flowchart",
+            "following_pages": "repeated A4 landscape standard work instruction",
+            "work_instruction_pages": 1,
+            "expected_rendered_pages": 2,
+            "work_image_layout": "per_step_1_to_6",
+        },
+        "artifacts": {
+            "document_docx": _artifact_record(document_path, output),
+            "center_flowchart_png": _artifact_record(center_flowchart, output),
+            "format_check_json": _artifact_record(format_check_path, output),
+            "validation_json": _artifact_record(validation_path, output),
+        },
+        "validation": {
+            "structural_pass": validation["structural_pass"],
+            "visual_qa_required": True,
+            "expected_rendered_pages": 2,
+        },
+        "compatibility": {
+            "legacy_generate_package_preserved": True,
+            "default_cli_uses_current_v5": True,
+        },
+    }
+    manifest_path = output / MANIFEST_NAME
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not validation["structural_pass"]:
+        raise RuntimeError(
+            "SOP current default structural validation failed: "
+            + "; ".join(validation["errors"])
+        )
+    return {
+        "template_id": CURRENT_DEFAULT_TEMPLATE_ID,
+        "status": "demo_not_for_release",
+        "document_docx": str(document_path.resolve()),
+        "center_flowchart_png": str(center_flowchart.resolve()),
+        "manifest_json": str(manifest_path.resolve()),
+        "format_check_json": str(format_check_path.resolve()),
+        "validation_json": str(validation_path.resolve()),
+        "expected_page_count": 2,
+        "structural_pass": True,
+        "visual_qa_required": True,
+    }
+
+
+def _adapt_demo_work_page_to_v5(page: dict[str, Any], display_date: str) -> dict[str, Any]:
+    """Adapt the legacy demo payload without changing its source fixture."""
+    slots = list(page.get("step_slots") or [])
+    slot_count = _normalize_work_image_slots(page.get("work_image_slots") or len(slots) or 3)
+    methods: list[str] = []
+    for slot in slots[:slot_count]:
+        text = str(slot.get("text_placeholder") or "").strip()
+        if ". " in text:
+            text = text.split(". ", 1)[1].strip()
+        if text:
+            methods.append(text)
+    side_sections = list(page.get("side_sections") or [])
+    side_lines = {
+        index: [str(line).strip() for line in section.get("lines") or [] if str(line).strip()]
+        for index, section in enumerate(side_sections)
+    }
+    parameter_lines = [
+        str(line).strip()
+        for section in page.get("parameter_sections") or []
+        for line in section.get("lines") or []
+        if str(line).strip()
+    ]
+    ie_rows = list((page.get("ie_time_study") or {}).get("rows") or [])
+    ie_lines = [
+        " / ".join(str(value).strip() for value in row.values() if str(value).strip())
+        for row in ie_rows
+        if isinstance(row, dict)
+    ]
+    adapted = dict(page)
+    adapted.update({
+        "version": "DRAFT",
+        "document_date": display_date,
+        "work_image_slots": slot_count,
+        "font_profile": page.get("font_profile") or "standard",
+        "operation_sections": {
+            "step_code": "DEMO-01",
+            "action": methods[0] if methods else "",
+            "why": "Complete this operation according to the controlled work instruction.",
+            "methods": methods,
+            "inputs": side_lines.get(2, []),
+            "materials": side_lines.get(2, []),
+            "equipment": side_lines.get(1, []),
+            "fixtures": [],
+            "parameters": parameter_lines,
+            "quality_checks": side_lines.get(0, []),
+            "acceptance": side_lines.get(0, []),
+            "safety": side_lines.get(3, []),
+            "exceptions": [],
+            "records": [],
+            "ie_lines": ie_lines,
+        },
+    })
+    return adapted
 
 
 def generate_route_package(
@@ -1111,10 +1291,9 @@ def main() -> int:
             route_id=args.route_id,
         )
     else:
-        result = generate_package(
+        result = generate_current_default_package(
             args.out_dir,
             document_date=args.document_date,
-            content_profile=args.content_profile,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
